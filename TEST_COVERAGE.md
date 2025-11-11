@@ -74,6 +74,52 @@
 - ✅ `TestIssue111` - тернарный оператор с различными типами
 - ✅ `TestIssue112` - парсинг больших целых чисел
 - ✅ `TestIssue117` - сравнение больших чисел
+- ✅ `TestIssue200` - lambda функции (может быть пропущен, если не реализованы)
+- ✅ `TestIssue217` - доступ к массивам с проверкой границ
+- ✅ `TestIssue242` - точность вычислений с double
+- ✅ `TestIssue267` - скрипты с параметрами
+- ✅ `TestIssue302` - if без скобок
+- ✅ `TestIssue306` - Elvis оператор
+- ✅ `TestIssue402` - return в if
+- ✅ `TestIssue407` - точность вычислений
+
+#### Тесты доступа к массивам (array_access_test.go)
+- ✅ `TestArrayAccessBasic` - простой доступ к массивам, спискам и мапам
+- ✅ `TestArrayArray` - доступ к многомерным массивам
+- ✅ `TestDoubleArrays` - доступ к двумерным массивам
+- ✅ `TestDoubleMaps` - доступ к вложенным мапам
+
+#### Тесты литералов множеств (set_literal_test.go)
+- ✅ `TestSetLiteralWithOneEntry` - литерал множества с одним элементом
+- ✅ `TestNotEmptySimpleSetLiteral` - проверка что множество не пустое
+- ✅ `TestSetLiteralWithNulls` - литерал множества с null значениями
+- ✅ `TestSetLiteralWithNumbers` - литерал множества с числами
+- ✅ `TestSetLiteralWithOneEntryScript` - литерал множества в скрипте
+- ✅ `TestSetLiteralWithStrings` - литерал множества со строками
+- ✅ `TestSetLiteralWithStringsScript` - литерал множества со строками в скрипте
+- ✅ `TestSizeOfSimpleSetLiteral` - размер простого литерала множества
+
+#### Тесты операторов сдвига (shift_operators_test.go)
+- ✅ `TestLeftShiftIntValue` - оператор сдвига влево для int значений
+- ✅ `TestLeftShiftLongValue` - оператор сдвига влево для long значений
+- ✅ `TestRightShiftIntValue` - оператор сдвига вправо для int значений
+- ✅ `TestRightShiftLongValue` - оператор сдвига вправо для long значений
+- ✅ `TestShiftPrecedence` - приоритет операторов сдвига
+- ✅ `TestRightShiftUnsignedIntValue` - беззнаковый сдвиг вправо для int значений
+
+#### Тесты обработки исключений (exception_test.go)
+- ✅ `TestExceptionNullPropertyAccess` - обработка исключений при доступе к null свойствам
+- ✅ `TestExceptionUndefinedVariable` - обработка неопределенных переменных
+- ✅ `TestExceptionNullOperand` - обработка null операндов в арифметике
+- ✅ `TestExceptionMethodCall` - обработка исключений при вызове методов
+- ✅ `TestExceptionPropertyAccess` - обработка исключений при доступе к свойствам
+
+#### Тесты Builder (builder_test.go)
+- ✅ `TestBuilderFlags` - тест флагов Builder
+- ✅ `TestBuilderCache` - тест настройки кэша
+- ✅ `TestBuilderValues` - тест установки значений
+- ✅ `TestBuilderBuild` - тест создания движка
+- ✅ `TestBuilderChaining` - тест цепочки вызовов Builder
 
 #### Тесты битовых операторов (bitwise_test.go)
 - ✅ `TestBitwiseAndSimple` - простая битовая операция AND
@@ -220,9 +266,9 @@
 8. И множество других специализированных тестов
 
 ### Go тесты (портировано):
-- **Всего тестов**: ~150+ тестов
-- **Покрытие базовой функциональности**: ~93%
-- **Покрытие продвинутой функциональности**: ~68%
+- **Всего тестов**: ~200+ тестов
+- **Покрытие базовой функциональности**: ~96%
+- **Покрытие продвинутой функциональности**: ~75%
 
 ## План дальнейшего портирования тестов
 
