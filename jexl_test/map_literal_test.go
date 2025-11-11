@@ -1,6 +1,7 @@
 package jexl_test
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/mentatxx/jexl-golang/jexl"
@@ -135,8 +136,27 @@ func TestMapLiteralWithNumbers(t *testing.T) {
 	}
 
 	// Ключи преобразуются в строки
-	if m["5"] != 10 {
-		t.Errorf("Expected m['5'] to be 10, got %v", m["5"])
+	val := m["5"]
+	var expected int64 = 10
+	var actual int64
+	switch v := val.(type) {
+	case int:
+		actual = int64(v)
+	case int64:
+		actual = v
+	case *big.Rat:
+		if v.IsInt() {
+			actual = v.Num().Int64()
+		} else {
+			t.Errorf("Expected integer, got %v", v)
+			return
+		}
+	default:
+		t.Errorf("Expected integer, got %T", val)
+		return
+	}
+	if actual != expected {
+		t.Errorf("Expected m['5'] to be 10, got %d", actual)
 	}
 }
 

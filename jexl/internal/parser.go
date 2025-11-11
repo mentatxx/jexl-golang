@@ -500,9 +500,10 @@ func (p *simpleParser) parseArrayLiteral() (jexl.Node, error) {
 
 // parseMapOrSetLiteral парсит литерал мапы {key: value} или множества {1, 2, 3}
 func (p *simpleParser) parseMapOrSetLiteral() (jexl.Node, error) {
+	// Пустая мапа {} должна быть мапой, а не множеством
 	if p.peek().typ == tokenRBrace {
 		p.next() // consume '}'
-		return jexl.NewSetLiteralNode(nil, "{}"), nil
+		return jexl.NewMapLiteralNode(nil, "{}"), nil
 	}
 
 	// Проверяем, не является ли это пустой мапой {:}
@@ -854,10 +855,13 @@ func (p *simpleParser) parseForStatement() (jexl.Node, error) {
 		if items == nil {
 			return nil, p.errorf("expected expression after ':'")
 		}
-		if body == nil {
-			return nil, p.errorf("expected statement or block after ')'")
+		// body может быть nil для пустого statement (точка с запятой)
+		source := fmt.Sprintf("for (var %s : %s)", varName.literal, items.SourceText())
+		if body != nil {
+			source += " " + body.SourceText()
+		} else {
+			source += " ;"
 		}
-		source := fmt.Sprintf("for (var %s : %s) %s", varName.literal, items.SourceText(), body.SourceText())
 		return jexl.NewForeachNode(jexl.NewIdentifierNode(varName.literal, varName.literal), items, body, source), nil
 	} else if peek.typ == tokenIdent {
 		// Может быть foreach без var: for (x : items)
@@ -878,10 +882,13 @@ func (p *simpleParser) parseForStatement() (jexl.Node, error) {
 			if err != nil {
 				return nil, err
 			}
-			if body == nil {
-				return nil, p.errorf("expected statement or block after ')'")
+			// body может быть nil для пустого statement (точка с запятой)
+			source := fmt.Sprintf("for (%s : %s)", varName.literal, items.SourceText())
+			if body != nil {
+				source += " " + body.SourceText()
+			} else {
+				source += " ;"
 			}
-			source := fmt.Sprintf("for (%s : %s) %s", varName.literal, items.SourceText(), body.SourceText())
 			return jexl.NewForeachNode(jexl.NewIdentifierNode(varName.literal, varName.literal), items, body, source), nil
 		}
 		// Не foreach, возвращаемся назад
@@ -1068,6 +1075,27 @@ func (p *simpleParser) parseVarStatement() (jexl.Node, error) {
 // parseBlock парсит блок { statements }
 func (p *simpleParser) parseBlock() (jexl.Node, error) {
 	p.next() // consume '{'
+	
+	// Проверяем, не является ли это пустым блоком
+	if p.peek().typ == tokenRBrace {
+		p.next() // consume '}'
+		return jexl.NewBlockNode(nil, "{}"), nil
+	}
+	
+	// Специальная обработка: если после { сразу идет выражение, которое может быть литералом множества или мапы
+	// Проверяем, не является ли это литералом множества или мапы
+	savedPos := p.pos
+	mapOrSet, err := p.parseMapOrSetLiteral()
+	if err == nil && mapOrSet != nil {
+		// Проверяем, что после литерала идет конец блока или EOF
+		if p.peek().typ == tokenRBrace || p.peek().typ == tokenEOF {
+			// Это литерал множества или мапы, возвращаем его
+			return mapOrSet, nil
+		}
+	}
+	// Восстанавливаем позицию и парсим как обычный блок
+	p.pos = savedPos
+	
 	var statements []jexl.Node
 
 	for p.peek().typ != tokenRBrace && p.peek().typ != tokenEOF {

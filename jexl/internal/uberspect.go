@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/mentatxx/jexl-golang/jexl"
 )
@@ -140,9 +141,46 @@ func (u *uberspectImpl) GetProperty(obj any, identifier string) jexl.PropertyGet
 	if val.Kind() != reflect.Slice && val.Kind() != reflect.Array &&
 		val.Kind() != reflect.Map && val.Kind() != reflect.Chan &&
 		val.Kind() != reflect.Func && val.Kind() != reflect.Interface {
-		// Пробуем поле
-		if field := val.FieldByName(identifier); field.IsValid() && field.CanInterface() {
-			return &fieldPropertyGet{field: field}
+		// Пробуем поле - сначала точное совпадение, потом с заглавной буквы
+		if field := val.FieldByName(identifier); field.IsValid() {
+			if field.CanInterface() {
+				return &fieldPropertyGet{field: field, useUnsafe: false}
+			}
+			// Для неэкспортированных полей используем unsafe
+			if field.CanAddr() {
+				typ := val.Type()
+				if structField, ok := typ.FieldByName(identifier); ok {
+					return &fieldPropertyGet{field: field, fieldType: structField, useUnsafe: true}
+				}
+			}
+		}
+		// Пробуем с заглавной буквы (для экспортированных полей)
+		if len(identifier) > 0 {
+			capitalizedName := strings.ToUpper(identifier[:1]) + identifier[1:]
+			if capitalizedName != identifier {
+				if field := val.FieldByName(capitalizedName); field.IsValid() && field.CanInterface() {
+					return &fieldPropertyGet{field: field, useUnsafe: false}
+				}
+			}
+		}
+		// Пробуем найти поле через поиск по всем полям (для неэкспортированных полей)
+		typ := val.Type()
+		for i := 0; i < typ.NumField(); i++ {
+			structField := typ.Field(i)
+			// Сравниваем имя поля (без учета регистра первого символа)
+			if strings.EqualFold(structField.Name, identifier) {
+				fieldVal := val.Field(i)
+				if fieldVal.IsValid() {
+					// Для экспортированных полей используем CanInterface
+					if fieldVal.CanInterface() {
+						return &fieldPropertyGet{field: fieldVal, useUnsafe: false}
+					}
+					// Для неэкспортированных полей используем unsafe
+					if fieldVal.CanAddr() {
+						return &fieldPropertyGet{field: fieldVal, fieldType: structField, useUnsafe: true}
+					}
+				}
+			}
 		}
 	}
 
@@ -237,11 +275,25 @@ func (u *uberspectImpl) GetMethod(obj any, name string, args []any) (jexl.Method
 	// Собираем все кандидаты методов
 	var candidates []reflect.Method
 	
+	// В Go методы экспортируются с заглавной буквы, но в JEXL могут вызываться с маленькой
+	// Пробуем оба варианта: точное совпадение и с заглавной буквы
+	nameVariants := []string{name}
+	if len(name) > 0 {
+		// Пробуем с заглавной буквы
+		capitalizedName := strings.ToUpper(name[:1]) + name[1:]
+		if capitalizedName != name {
+			nameVariants = append(nameVariants, capitalizedName)
+		}
+	}
+	
 	// Ищем методы на значении
 	for i := 0; i < val.Type().NumMethod(); i++ {
 		m := val.Type().Method(i)
-		if m.Name == name {
-			candidates = append(candidates, m)
+		for _, variant := range nameVariants {
+			if m.Name == variant {
+				candidates = append(candidates, m)
+				break
+			}
 		}
 	}
 	
@@ -250,17 +302,20 @@ func (u *uberspectImpl) GetMethod(obj any, name string, args []any) (jexl.Method
 		elemType := val.Elem().Type()
 		for i := 0; i < elemType.NumMethod(); i++ {
 			m := elemType.Method(i)
-			if m.Name == name {
-				// Проверяем, что метод не был уже добавлен
-				found := false
-				for _, c := range candidates {
-					if c.Name == m.Name && c.Type == m.Type {
-						found = true
-						break
+			for _, variant := range nameVariants {
+				if m.Name == variant {
+					// Проверяем, что метод не был уже добавлен
+					found := false
+					for _, c := range candidates {
+						if c.Name == m.Name && c.Type == m.Type {
+							found = true
+							break
+						}
 					}
-				}
-				if !found {
-					candidates = append(candidates, m)
+					if !found {
+						candidates = append(candidates, m)
+					}
+					break
 				}
 			}
 		}
@@ -438,14 +493,28 @@ func (u *uberspectImpl) GetConstructor(name string, args []any) (jexl.Method, er
 // Реализации PropertyGet
 
 type fieldPropertyGet struct {
-	field reflect.Value
+	field     reflect.Value
+	fieldType reflect.StructField
+	useUnsafe bool
 }
 
 func (f *fieldPropertyGet) Invoke(obj any) (any, error) {
 	if !f.field.IsValid() {
 		return nil, jexl.NewError("invalid field")
 	}
-	return f.field.Interface(), nil
+	// Если поле может быть прочитано через Interface(), используем обычный способ
+	if f.field.CanInterface() {
+		return f.field.Interface(), nil
+	}
+	// Для неэкспортированных полей используем unsafe
+	if f.useUnsafe && f.field.CanAddr() {
+		// Получаем указатель на поле через unsafe
+		ptr := unsafe.Pointer(f.field.UnsafeAddr())
+		// Создаем новый reflect.Value для поля через указатель
+		fieldPtr := reflect.NewAt(f.field.Type(), ptr)
+		return fieldPtr.Elem().Interface(), nil
+	}
+	return nil, jexl.NewError("cannot access unexported field")
 }
 
 type methodPropertyGet struct {

@@ -71,6 +71,17 @@ func (a *BaseArithmetic) MathScale() int {
 
 // Compare выполняет сравнение, используя big.Rat при необходимости.
 func (a *BaseArithmetic) Compare(lhs, rhs any) (int, error) {
+	// Специальная обработка для null
+	if lhs == nil && rhs == nil {
+		return 0, nil
+	}
+	if lhs == nil {
+		return -1, nil // null меньше любого не-null значения
+	}
+	if rhs == nil {
+		return 1, nil // любое не-null значение больше null
+	}
+	
 	// Специальная обработка для bool
 	if lb, ok := lhs.(bool); ok {
 		if rb, ok := rhs.(bool); ok {

@@ -1023,14 +1023,14 @@ func (i *interpreter) interpretMapLiteral(node *jexl.MapLiteralNode) (any, error
 }
 
 // interpretSetLiteral выполняет литерал множества.
+// В JEXL множества реализованы как мапы, где ключи - это элементы множества, а значения - true
 func (i *interpreter) interpretSetLiteral(node *jexl.SetLiteralNode) (any, error) {
 	elements := node.Elements()
 	if elements == nil {
-		return []any{}, nil
+		return make(map[string]any), nil
 	}
 
-	result := make([]any, 0, len(elements))
-	seen := make(map[any]bool)
+	result := make(map[string]any)
 
 	for _, elem := range elements {
 		val, err := i.interpret(elem)
@@ -1038,11 +1038,9 @@ func (i *interpreter) interpretSetLiteral(node *jexl.SetLiteralNode) (any, error
 			return nil, err
 		}
 
-		// Проверяем на дубликаты (простая реализация)
-		if !seen[val] {
-			seen[val] = true
-			result = append(result, val)
-		}
+		// Преобразуем значение в строку для использования в качестве ключа мапы
+		keyStr := fmt.Sprintf("%v", val)
+		result[keyStr] = true
 	}
 
 	return result, nil

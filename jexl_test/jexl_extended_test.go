@@ -352,13 +352,14 @@ func TestSetLiteral(t *testing.T) {
 		t.Fatalf("Failed to evaluate expression: %v", err)
 	}
 
-	arr, ok := result.([]any)
+	// В JEXL множества реализованы как мапы, где ключи - это элементы множества
+	m, ok := result.(map[string]any)
 	if !ok {
-		t.Fatalf("Expected array, got %T", result)
+		t.Fatalf("Expected map (set), got %T", result)
 	}
 
-	if len(arr) != 5 {
-		t.Fatalf("Expected array length 5, got %d", len(arr))
+	if len(m) != 5 {
+		t.Fatalf("Expected set size 5, got %d", len(m))
 	}
 }
 
