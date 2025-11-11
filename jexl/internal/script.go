@@ -48,7 +48,18 @@ func (s *script) Execute(ctx jexl.Context, args ...any) (any, error) {
 	}
 
 	interp := newInterpreter(s.engine, execCtx)
-	return interp.interpret(s.ast)
+	result, err := interp.interpret(s.ast)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Если скрипт содержит только lambda функцию и переданы аргументы,
+	// автоматически вызываем lambda с этими аргументами
+	if script, ok := result.(jexl.Script); ok && len(allArgs) > 0 {
+		return script.Execute(execCtx, allArgs...)
+	}
+	
+	return result, nil
 }
 
 // Evaluate реализует Expression.Evaluate.

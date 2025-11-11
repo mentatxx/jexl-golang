@@ -1092,3 +1092,52 @@ func (v *VarNode) Name() *IdentifierNode {
 func (v *VarNode) Value() Node {
 	return v.value
 }
+
+// LambdaNode представляет lambda функцию (x, y) -> x + y или (x, y) => x + y.
+// Аналог org.apache.commons.jexl3.parser.ASTJexlLambda.
+type LambdaNode struct {
+	parameters []*IdentifierNode
+	body       Node
+	source     string
+}
+
+// NewLambdaNode создаёт новый LambdaNode.
+func NewLambdaNode(parameters []*IdentifierNode, body Node, source string) *LambdaNode {
+	return &LambdaNode{
+		parameters: parameters,
+		body:       body,
+		source:     source,
+	}
+}
+
+// Children возвращает дочерние узлы (параметры и тело).
+func (l *LambdaNode) Children() []Node {
+	children := make([]Node, 0, len(l.parameters)+1)
+	for _, param := range l.parameters {
+		children = append(children, param)
+	}
+	if l.body != nil {
+		children = append(children, l.body)
+	}
+	return children
+}
+
+// String возвращает строковое представление.
+func (l *LambdaNode) String() string {
+	return l.source
+}
+
+// SourceText возвращает исходный текст.
+func (l *LambdaNode) SourceText() string {
+	return l.source
+}
+
+// Parameters возвращает список параметров.
+func (l *LambdaNode) Parameters() []*IdentifierNode {
+	return l.parameters
+}
+
+// Body возвращает тело lambda функции.
+func (l *LambdaNode) Body() Node {
+	return l.body
+}

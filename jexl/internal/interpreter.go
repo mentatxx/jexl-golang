@@ -79,6 +79,8 @@ func (i *interpreter) interpret(node jexl.Node) (any, error) {
 		return i.interpretReturn(n)
 	case *jexl.VarNode:
 		return i.interpretVar(n)
+	case *jexl.LambdaNode:
+		return i.interpretLambda(n)
 	case nil:
 		// Пустое statement (;)
 		return nil, nil
@@ -218,14 +220,21 @@ func (i *interpreter) interpretBinaryOp(node *jexl.BinaryOpNode) (any, error) {
 	case "=~":
 		// В JEXL x =~ y:
 		// - Если y - строка: проверяем соответствие x регулярному выражению y
-		// - Если y - коллекция: проверяем, содержится ли x в y
+		// - Если y - коллекция и x - не коллекция: проверяем, содержится ли x в y
+		// - Если x - коллекция и y - коллекция: проверяем, содержится ли каждый элемент x в y
 		// Для строк: left =~ right означает "left соответствует right"
-		// Для коллекций: left =~ right означает "left содержится в right"
+		// Для коллекций: left =~ right означает "left содержится в right" или "каждый элемент left содержится в right"
 		if _, ok := right.(string); ok {
 			// Строковый паттерн - проверяем соответствие left паттерну right
 			return arithmetic.Contains(left, right)
 		}
-		// Коллекция - проверяем, содержится ли left в right
+		// Проверяем, является ли left коллекцией
+		leftRv := reflect.ValueOf(left)
+		if leftRv.Kind() == reflect.Array || leftRv.Kind() == reflect.Slice {
+			// left - коллекция, проверяем, содержится ли каждый элемент left в right
+			return arithmetic.ContainsAll(right, left)
+		}
+		// left - не коллекция, проверяем, содержится ли left в right
 		return arithmetic.Contains(right, left)
 	case "=^":
 		return arithmetic.StartsWith(left, right)
@@ -548,6 +557,19 @@ func (i *interpreter) interpretMethodCall(node *jexl.MethodCallNode) (any, error
 		return i.interpretSize(args[0])
 	}
 
+	// Проверяем, не является ли methodName lambda функцией или Script
+	// Если target - это lambda (Script), вызываем его
+	if targetNode := node.Target(); targetNode != nil {
+		target, err := i.interpret(targetNode)
+		if err != nil {
+			return nil, err
+		}
+		// Если target - это Script (lambda), вызываем его
+		if script, ok := target.(jexl.Script); ok {
+			return script.Execute(i.context, args...)
+		}
+	}
+	
 	// Функция верхнего уровня - ищем в контексте
 	if i.context == nil {
 		return nil, jexl.NewError("context is nil")
@@ -1343,6 +1365,13 @@ func (i *interpreter) interpretVar(node *jexl.VarNode) (any, error) {
 	// Если нет значения, просто объявляем переменную как nil
 	i.context.Set(name, nil)
 	return nil, nil
+}
+
+// interpretLambda выполняет lambda функцию и создаёт Closure.
+func (i *interpreter) interpretLambda(node *jexl.LambdaNode) (any, error) {
+	// Создаём closure с захваченным контекстом
+	closure := NewClosure(i.engine, node, i.context)
+	return closure, nil
 }
 
 // interpretReturn выполняет return statement.

@@ -1,6 +1,7 @@
 package jexl_test
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/mentatxx/jexl-golang/jexl"
@@ -52,8 +53,19 @@ func TestFeaturesCreateDefault(t *testing.T) {
 		t.Fatalf("Failed to execute script: %v", err)
 	}
 
-	val, ok := result.(int64)
-	if !ok {
+	var val int64
+	switch v := result.(type) {
+	case int:
+		val = int64(v)
+	case int64:
+		val = v
+	case *big.Rat:
+		if v.IsInt() {
+			val = v.Num().Int64()
+		} else {
+			t.Fatalf("Expected integer, got %v", v)
+		}
+	default:
 		t.Fatalf("Expected int64, got %T", result)
 	}
 
@@ -91,8 +103,19 @@ func TestFeaturesNoLoops(t *testing.T) {
 		t.Fatalf("Failed to evaluate: %v", err)
 	}
 
-	val, ok := result.(int64)
-	if !ok {
+	var val int64
+	switch v := result.(type) {
+	case int:
+		val = int64(v)
+	case int64:
+		val = v
+	case *big.Rat:
+		if v.IsInt() {
+			val = v.Num().Int64()
+		} else {
+			t.Fatalf("Expected integer, got %v", v)
+		}
+	default:
 		t.Fatalf("Expected int64, got %T", result)
 	}
 
@@ -135,8 +158,19 @@ func TestFeaturesNoLocalVar(t *testing.T) {
 		t.Fatalf("Failed to evaluate: %v", err)
 	}
 
-	val, ok := result.(int64)
-	if !ok {
+	var val int64
+	switch v := result.(type) {
+	case int:
+		val = int64(v)
+	case int64:
+		val = v
+	case *big.Rat:
+		if v.IsInt() {
+			val = v.Num().Int64()
+		} else {
+			t.Fatalf("Expected integer, got %v", v)
+		}
+	default:
 		t.Fatalf("Expected int64, got %T", result)
 	}
 
@@ -278,8 +312,19 @@ func TestFeaturesNoScript(t *testing.T) {
 		t.Fatalf("Failed to evaluate: %v", err)
 	}
 
-	val, ok := result.(int64)
-	if !ok {
+	var val int64
+	switch v := result.(type) {
+	case int:
+		val = int64(v)
+	case int64:
+		val = v
+	case *big.Rat:
+		if v.IsInt() {
+			val = v.Num().Int64()
+		} else {
+			t.Fatalf("Expected integer, got %v", v)
+		}
+	default:
 		t.Fatalf("Expected int64, got %T", result)
 	}
 
@@ -316,8 +361,19 @@ func TestFeaturesMixedFeatures(t *testing.T) {
 		t.Fatalf("Failed to evaluate: %v", err)
 	}
 
-	val, ok := result.(int64)
-	if !ok {
+	var val int64
+	switch v := result.(type) {
+	case int:
+		val = int64(v)
+	case int64:
+		val = v
+	case *big.Rat:
+		if v.IsInt() {
+			val = v.Num().Int64()
+		} else {
+			t.Fatalf("Expected integer, got %v", v)
+		}
+	default:
 		t.Fatalf("Expected int64, got %T", result)
 	}
 

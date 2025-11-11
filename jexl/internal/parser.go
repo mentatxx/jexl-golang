@@ -158,6 +158,25 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 		emptyIdent := jexl.NewIdentifierNode("empty", "empty")
 		args := []jexl.Node{operand}
 		left = jexl.NewMethodCallNode(nil, emptyIdent, args, fmt.Sprintf("empty(%s)", operand.SourceText()))
+	case tokenSize:
+		// Функция size: size(x) или size x
+		// Проверяем, есть ли скобки после size
+		if p.peek().typ == tokenLParen {
+			// size(x) - вызов функции
+			sizeIdent := jexl.NewIdentifierNode("size", "size")
+			left = sizeIdent
+			// parseCall обработает вызов
+		} else {
+			// size x - оператор без скобок
+			operand, err := p.parseExpression(prefixPrecedence)
+			if err != nil {
+				return nil, err
+			}
+			// Создаём вызов функции size(operand)
+			sizeIdent := jexl.NewIdentifierNode("size", "size")
+			args := []jexl.Node{operand}
+			left = jexl.NewMethodCallNode(nil, sizeIdent, args, fmt.Sprintf("size(%s)", operand.SourceText()))
+		}
 	case tokenNot:
 		// Оператор not: not empty x или not x
 		next := p.peek()
@@ -194,26 +213,82 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 		}
 		left = jexl.NewLiteralNode(val, tok.literal)
 	case tokenIdent:
-		left = jexl.NewIdentifierNode(tok.literal, tok.literal)
+		// Проверяем, не является ли это lambda функцией с одним параметром без скобок: x -> x + 1
+		if p.isLambdaStartAfterIdent() {
+			// Это lambda функция - параметр уже прочитан в tok
+			param := jexl.NewIdentifierNode(tok.literal, tok.literal)
+			parameters := []*jexl.IdentifierNode{param}
+			
+			// Парсим стрелку: -> или =>
+			var arrow string
+			if p.peek().typ == tokenLambda {
+				p.next() // consume '->'
+				arrow = "->"
+			} else if p.peek().typ == tokenFatArrow {
+				p.next() // consume '=>'
+				arrow = "=>"
+			} else {
+				return nil, p.errorf("expected '->' or '=>' in lambda")
+			}
+			
+			// Парсим тело lambda
+			var body jexl.Node
+			var err error
+			if p.peek().typ == tokenLBrace {
+				body, err = p.parseBlock()
+			} else {
+				body, err = p.parseExpression(0)
+			}
+			if err != nil {
+				return nil, err
+			}
+			
+			source := tok.literal + " " + arrow + " " + body.SourceText()
+			left = jexl.NewLambdaNode(parameters, body, source)
+		} else {
+			left = jexl.NewIdentifierNode(tok.literal, tok.literal)
+		}
 	case tokenBool:
 		left = jexl.NewLiteralNode(tok.value, tok.literal)
 	case tokenNull:
 		left = jexl.NewLiteralNode(nil, tok.literal)
 	case tokenLBracket:
 		// Массив: [1, 2, 3]
-		return p.parseArrayLiteral()
+		arrayNode, err := p.parseArrayLiteral()
+		if err != nil {
+			return nil, err
+		}
+		left = arrayNode
 	case tokenLBrace:
 		// Мапа или множество: {key: value} или {1, 2, 3}
 		return p.parseMapOrSetLiteral()
 	case tokenLParen:
-		expr, err := p.parseExpression(0)
-		if err != nil {
-			return nil, err
+		// Проверяем, не является ли это lambda функцией
+		// Lookahead: если после ( идут идентификаторы, а затем -> или =>, то это lambda
+		// Токен ( уже прочитан, поэтому проверяем следующий токен
+		savedPos := p.pos
+		// isLambdaStartAfterLParen проверяет lambda после уже прочитанной (
+		isLambda := p.isLambdaStartAfterLParen()
+		// Восстанавливаем позицию
+		p.pos = savedPos
+		if isLambda {
+			// Это lambda функция - ( уже прочитан, парсим параметры
+			lambda, err := p.parseLambda()
+			if err != nil {
+				return nil, err
+			}
+			left = lambda
+		} else {
+			// Обычное выражение в скобках
+			expr, err := p.parseExpression(0)
+			if err != nil {
+				return nil, err
+			}
+			if err := p.expect(tokenRParen); err != nil {
+				return nil, err
+			}
+			left = expr
 		}
-		if err := p.expect(tokenRParen); err != nil {
-			return nil, err
-		}
-		left = expr
 	default:
 		return nil, p.errorf("unexpected token %s", tok.literal)
 	}
@@ -430,6 +505,17 @@ func (p *simpleParser) parseMapOrSetLiteral() (jexl.Node, error) {
 		return jexl.NewSetLiteralNode(nil, "{}"), nil
 	}
 
+	// Проверяем, не является ли это пустой мапой {:}
+	if p.peek().typ == tokenColon {
+		p.next() // consume ':'
+		if p.peek().typ == tokenRBrace {
+			p.next() // consume '}'
+			return jexl.NewMapLiteralNode(nil, "{:}"), nil
+		}
+		// Если после : идет что-то еще, это ошибка
+		return nil, p.errorf("unexpected token after ':' in map literal")
+	}
+
 	// Пробуем определить, это мапа или множество
 	// Если следующий токен после первого выражения - двоеточие, это мапа
 	firstExpr, err := p.parseExpression(0)
@@ -515,6 +601,136 @@ func (p *simpleParser) parseMapOrSetLiteral() (jexl.Node, error) {
 	return jexl.NewSetLiteralNode(elements, source), nil
 }
 
+// parseLambda парсит lambda функцию: (x, y) -> x + y или x -> x + 1 или (x, y) => x + y
+// Если вызывается из parseExpression после чтения (, то ( уже прочитан
+func (p *simpleParser) parseLambda() (jexl.Node, error) {
+	// Проверяем, включена ли поддержка lambda
+	if p.features != nil && !p.features.SupportsLambda() {
+		return nil, p.errorf("lambda functions are not enabled")
+	}
+
+	var parameters []*jexl.IdentifierNode
+	var sourceStart string
+
+	// Парсим параметры
+	// Проверяем, является ли текущий токен ( или идентификатор
+	// Если это идентификатор, то ( уже прочитан в parseExpression
+	if p.peek().typ == tokenLParen {
+		// Множественные параметры в скобках: (x, y) - ( еще не прочитан
+		p.next() // consume '('
+		sourceStart = "("
+	} else if p.peek().typ == tokenIdent {
+		// Множественные параметры в скобках: (x, y) - ( уже прочитан в parseExpression
+		// или один параметр без скобок: x
+		// Проверяем, есть ли запятая после идентификатора - если да, то это множественные параметры
+		savedPos := p.pos
+		p.pos++
+		hasComma := p.pos < len(p.tokens) && p.tokens[p.pos].typ == tokenComma
+		p.pos = savedPos
+		
+		if hasComma {
+			// Множественные параметры в скобках: (x, y) - ( уже прочитан
+			sourceStart = "("
+		} else {
+			// Один параметр без скобок: x
+			paramTok := p.next()
+			param := jexl.NewIdentifierNode(paramTok.literal, paramTok.literal)
+			parameters = append(parameters, param)
+			sourceStart = paramTok.literal
+			
+			// Парсим стрелку и тело
+			var arrow string
+			if p.peek().typ == tokenLambda {
+				p.next() // consume '->'
+				arrow = "->"
+			} else if p.peek().typ == tokenFatArrow {
+				p.next() // consume '=>'
+				arrow = "=>"
+			} else {
+				return nil, p.errorf("expected '->' or '=>' in lambda")
+			}
+			
+			var body jexl.Node
+			var err error
+			if p.peek().typ == tokenLBrace {
+				body, err = p.parseBlock()
+			} else {
+				body, err = p.parseExpression(0)
+			}
+			if err != nil {
+				return nil, err
+			}
+			
+			source := sourceStart + " " + arrow + " " + body.SourceText()
+			return jexl.NewLambdaNode(parameters, body, source), nil
+		}
+	} else {
+		return nil, p.errorf("expected lambda parameters")
+	}
+
+	// Парсим множественные параметры в скобках
+	for {
+		if p.peek().typ == tokenRParen {
+			p.next() // consume ')'
+			sourceStart += ")"
+			break
+		}
+		if p.peek().typ != tokenIdent {
+			return nil, p.errorf("expected identifier in lambda parameters")
+		}
+		paramTok := p.next()
+		param := jexl.NewIdentifierNode(paramTok.literal, paramTok.literal)
+		parameters = append(parameters, param)
+		if len(parameters) > 1 {
+			sourceStart += ", "
+		}
+		sourceStart += paramTok.literal
+
+		if p.peek().typ == tokenComma {
+			p.next() // consume ','
+			sourceStart += ","
+			continue
+		}
+		if p.peek().typ == tokenRParen {
+			p.next() // consume ')'
+			sourceStart += ")"
+			break
+		}
+	}
+
+	// Парсим стрелку: -> или =>
+	var arrow string
+	if p.peek().typ == tokenLambda {
+		p.next() // consume '->'
+		arrow = "->"
+	} else if p.peek().typ == tokenFatArrow {
+		p.next() // consume '=>'
+		arrow = "=>"
+	} else {
+		return nil, p.errorf("expected '->' or '=>' in lambda")
+	}
+
+	// Парсим тело lambda (выражение или блок)
+	var body jexl.Node
+	var err error
+	if p.peek().typ == tokenLBrace {
+		// Блок: { return x + y; }
+		body, err = p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Выражение: x + y
+		body, err = p.parseExpression(0)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	source := sourceStart + " " + arrow + " " + body.SourceText()
+	return jexl.NewLambdaNode(parameters, body, source), nil
+}
+
 // parseStatement парсит statement (if, for, while, etc.)
 func (p *simpleParser) parseStatement() (jexl.Node, error) {
 	next := p.peek()
@@ -522,15 +738,27 @@ func (p *simpleParser) parseStatement() (jexl.Node, error) {
 	case tokenIf:
 		return p.parseIfStatement()
 	case tokenFor:
+		// Проверяем, включены ли циклы
+		if p.features != nil && !p.features.SupportsLoops() {
+			return nil, p.errorf("loops are not enabled")
+		}
 		return p.parseForStatement()
 	case tokenWhile:
 		return p.parseWhileStatement()
 	case tokenDo:
 		return p.parseDoWhileStatement()
 	case tokenBreak:
+		// Проверяем, включены ли циклы (break используется в циклах)
+		if p.features != nil && !p.features.SupportsLoops() {
+			return nil, p.errorf("loops are not enabled")
+		}
 		p.next()
 		return jexl.NewBreakNode("break"), nil
 	case tokenContinue:
+		// Проверяем, включены ли циклы (continue используется в циклах)
+		if p.features != nil && !p.features.SupportsLoops() {
+			return nil, p.errorf("loops are not enabled")
+		}
 		p.next()
 		return jexl.NewContinueNode("continue"), nil
 	case tokenReturn:
@@ -564,7 +792,11 @@ func (p *simpleParser) parseIfStatement() (jexl.Node, error) {
 	}
 
 	var elseBranch jexl.Node
-	if p.match(tokenElse) {
+	// Проверяем, является ли следующий токен else
+	// Это может быть сразу после thenBranch или после точки с запятой (если thenBranch - это statement с точкой с запятой)
+	// Но в JEXL else может идти после if statement без точки с запятой между ними
+	if p.peek().typ == tokenElse {
+		p.next() // consume 'else'
 		// Проверяем, является ли это else if
 		if p.peek().typ == tokenIf {
 			// Это else if - парсим как вложенный if
@@ -714,6 +946,10 @@ func (p *simpleParser) parseForStatement() (jexl.Node, error) {
 
 // parseWhileStatement парсит while statement
 func (p *simpleParser) parseWhileStatement() (jexl.Node, error) {
+	// Проверяем, включены ли циклы
+	if p.features != nil && !p.features.SupportsLoops() {
+		return nil, p.errorf("loops are not enabled")
+	}
 	p.next() // consume 'while'
 	if err := p.expect(tokenLParen); err != nil {
 		return nil, err
@@ -740,10 +976,18 @@ func (p *simpleParser) parseWhileStatement() (jexl.Node, error) {
 
 // parseDoWhileStatement парсит do-while statement
 func (p *simpleParser) parseDoWhileStatement() (jexl.Node, error) {
+	// Проверяем, включены ли циклы
+	if p.features != nil && !p.features.SupportsLoops() {
+		return nil, p.errorf("loops are not enabled")
+	}
 	p.next() // consume 'do'
 	body, err := p.parseStatementOrBlock()
 	if err != nil {
 		return nil, err
+	}
+	// После body может быть точка с запятой, пропускаем её
+	if p.peek().typ == tokenSemicolon {
+		p.next() // consume ';'
 	}
 	if err := p.expect(tokenWhile); err != nil {
 		return nil, err
@@ -773,11 +1017,20 @@ func (p *simpleParser) parseReturnStatement() (jexl.Node, error) {
 	p.next() // consume 'return'
 	var value jexl.Node
 	var err error
-	if p.peek().typ != tokenSemicolon && p.peek().typ != tokenEOF && p.peek().typ != tokenRBrace {
+	// Проверяем, не является ли следующий токен концом statement или else
+	// else может идти после return в контексте if statement
+	next := p.peek()
+	if next.typ != tokenSemicolon && next.typ != tokenEOF && next.typ != tokenRBrace && next.typ != tokenElse {
+		// Парсим выражение, но нужно быть осторожным - если следующее выражение заканчивается на else,
+		// то это не часть return, а начало else clause
+		// Пока что просто парсим выражение
 		value, err = p.parseExpression(0)
 		if err != nil {
 			return nil, err
 		}
+		// После парсинга выражения проверяем, не является ли следующий токен else
+		// Если да, то это ошибка - else не может быть частью выражения
+		// Но на самом деле, это нормально - else идет после return statement
 	}
 	source := "return"
 	if value != nil {
@@ -872,10 +1125,18 @@ func (p *simpleParser) parseStatementOrBlock() (jexl.Node, error) {
 		return nil, err
 	}
 	if node != nil {
+		// После statement может быть точка с запятой, но мы её не обрабатываем здесь
+		// Она будет обработана в ParseScript
 		return node, nil
 	}
 	// Если не statement, пробуем парсить как выражение
-	return p.parseExpression(0)
+	expr, err := p.parseExpression(0)
+	if err != nil {
+		return nil, err
+	}
+	// После выражения может быть точка с запятой, но мы её не обрабатываем здесь
+	// Она будет обработана в ParseScript
+	return expr, nil
 }
 
 // parseCall парсит вызов метода или функции.
@@ -1068,6 +1329,9 @@ const (
 	tokenEmpty
 	tokenSize
 	tokenNot
+	// Lambda операторы
+	tokenLambda   // ->
+	tokenFatArrow // =>
 )
 
 // token представляет токен.
@@ -1122,6 +1386,9 @@ func (l *lexer) nextToken() token {
 		}
 		return token{typ: tokenPlus, literal: "+"}
 	case '-':
+		if l.match('>') {
+			return token{typ: tokenLambda, literal: "->"}
+		}
 		if l.match('=') {
 			return token{typ: tokenMinusEqual, literal: "-="}
 		}
@@ -1184,6 +1451,9 @@ func (l *lexer) nextToken() token {
 	case '=':
 		if l.match('=') {
 			return token{typ: tokenEqualEqual, literal: "=="}
+		}
+		if l.match('>') {
+			return token{typ: tokenFatArrow, literal: "=>"}
 		}
 		if l.match('~') {
 			return token{typ: tokenContains, literal: "=~"}
@@ -1493,4 +1763,91 @@ func isAssignableTarget(node jexl.Node) bool {
 	default:
 		return false
 	}
+}
+
+// isLambdaStart проверяет, является ли текущая позиция началом lambda функции в скобках: (x, y) -> ...
+// Предполагает, что ( уже прочитан
+func (p *simpleParser) isLambdaStartAfterLParen() bool {
+	if p.pos >= len(p.tokens) {
+		return false
+	}
+	// Сохраняем текущую позицию
+	savedPos := p.pos
+	defer func() {
+		p.pos = savedPos
+	}()
+
+	// Проверяем, идут ли после ( идентификаторы
+	hasParams := false
+	for p.pos < len(p.tokens) {
+		tok := p.tokens[p.pos]
+		if tok.typ == tokenIdent {
+			hasParams = true
+			p.pos++
+			// Проверяем, есть ли запятая или закрывающая скобка
+			if p.pos >= len(p.tokens) {
+				return false
+			}
+			next := p.tokens[p.pos]
+			if next.typ == tokenComma {
+				p.pos++
+				continue
+			}
+			if next.typ == tokenRParen {
+				p.pos++
+				break
+			}
+			// Если после идентификатора идет что-то другое (не запятая и не скобка), это не lambda
+			return false
+		} else if tok.typ == tokenRParen {
+			// Закрывающая скобка - выходим из цикла
+			if hasParams {
+				p.pos++
+				break
+			}
+			// Если нет параметров, это не lambda
+			return false
+		} else {
+			// Любой другой токен - это не lambda
+			return false
+		}
+	}
+
+	// После ) должна идти стрелка -> или =>
+	if p.pos < len(p.tokens) {
+		next := p.tokens[p.pos]
+		return next.typ == tokenLambda || next.typ == tokenFatArrow
+	}
+	return false
+}
+
+// isLambdaStart проверяет, является ли текущая позиция началом lambda функции в скобках: (x, y) -> ...
+func (p *simpleParser) isLambdaStart() bool {
+	if p.pos >= len(p.tokens) {
+		return false
+	}
+	// Сохраняем текущую позицию
+	savedPos := p.pos
+	defer func() {
+		p.pos = savedPos
+	}()
+
+	// Пропускаем (
+	if p.pos >= len(p.tokens) || p.tokens[p.pos].typ != tokenLParen {
+		return false
+	}
+	p.pos++
+
+	// Используем isLambdaStartAfterLParen для проверки после (
+	return p.isLambdaStartAfterLParen()
+}
+
+// isLambdaStartAfterIdent проверяет, является ли текущая позиция началом lambda функции после идентификатора: x -> ...
+func (p *simpleParser) isLambdaStartAfterIdent() bool {
+	if p.pos >= len(p.tokens) {
+		return false
+	}
+	// Следующий токен должен быть -> или =>
+	next := p.tokens[p.pos]
+	return next.typ == tokenLambda || next.typ == tokenFatArrow
 }

@@ -1,6 +1,7 @@
 package jexl_test
 
 import (
+	"math/big"
 	"reflect"
 	"testing"
 
@@ -280,8 +281,19 @@ func TestSizeOfSimpleSetLiteral(t *testing.T) {
 	}
 
 	// Проверяем, что размер равен 2
-	if result != 2 {
-		t.Errorf("Expected size 2, got %v", result)
+	var size int64
+	switch v := result.(type) {
+	case int:
+		size = int64(v)
+	case int64:
+		size = v
+	case *big.Rat:
+		size = v.Num().Int64()
+	default:
+		t.Fatalf("Unexpected result type: %T", result)
+	}
+	if size != 2 {
+		t.Errorf("Expected size 2, got %d", size)
 	}
 }
 

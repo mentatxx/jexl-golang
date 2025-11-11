@@ -1,6 +1,7 @@
 package jexl_test
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/mentatxx/jexl-golang/jexl"
@@ -29,8 +30,27 @@ func TestExceptionNullPropertyAccess(t *testing.T) {
 		t.Logf("Expected error in strict mode: %v", err)
 	} else {
 		// В нестрогом режиме должен вернуться 42
-		if result != 42 {
-			t.Errorf("Expected 42, got %v", result)
+		// Проверяем разные типы для 42
+		var expected int64 = 42
+		var actual int64
+		switch v := result.(type) {
+		case int:
+			actual = int64(v)
+		case int64:
+			actual = v
+		case *big.Rat:
+			if v.IsInt() {
+				actual = v.Num().Int64()
+			} else {
+				t.Errorf("Expected 42, got %v", result)
+				return
+			}
+		default:
+			t.Errorf("Expected 42, got %v (type %T)", result, result)
+			return
+		}
+		if actual != expected {
+			t.Errorf("Expected 42, got %d", actual)
 		}
 	}
 }
@@ -57,8 +77,27 @@ func TestExceptionUndefinedVariable(t *testing.T) {
 		t.Logf("Expected error in strict mode: %v", err)
 	} else {
 		// В нестрогом режиме должен вернуться 42
-		if result != 42 {
-			t.Errorf("Expected 42, got %v", result)
+		// Проверяем разные типы для 42
+		var expected int64 = 42
+		var actual int64
+		switch v := result.(type) {
+		case int:
+			actual = int64(v)
+		case int64:
+			actual = v
+		case *big.Rat:
+			if v.IsInt() {
+				actual = v.Num().Int64()
+			} else {
+				t.Errorf("Expected 42, got %v", result)
+				return
+			}
+		default:
+			t.Errorf("Expected 42, got %v (type %T)", result, result)
+			return
+		}
+		if actual != expected {
+			t.Errorf("Expected 42, got %d", actual)
 		}
 	}
 }

@@ -31,6 +31,7 @@ type Arithmetic interface {
 	ShiftRightUnsigned(a, b any) (any, error)
 	// Строковые операции
 	Contains(a, b any) (any, error)
+	ContainsAll(collection, elements any) (any, error) // Проверяет, содержится ли каждый элемент elements в collection
 	StartsWith(a, b any) (any, error)
 	EndsWith(a, b any) (any, error)
 	// Range операция
@@ -542,6 +543,36 @@ func (a *BaseArithmetic) Contains(lhs, rhs any) (any, error) {
 	ls := fmt.Sprintf("%v", lhs)
 	rs := fmt.Sprintf("%v", rhs)
 	return strings.Contains(ls, rs), nil
+}
+
+// ContainsAll проверяет, содержится ли каждый элемент elements в collection.
+// Используется для проверки, является ли один массив подмножеством другого.
+func (a *BaseArithmetic) ContainsAll(collection, elements any) (any, error) {
+	// Получаем элементы для проверки
+	elementsRv := reflect.ValueOf(elements)
+	if elementsRv.Kind() != reflect.Array && elementsRv.Kind() != reflect.Slice {
+		return false, NewError("ContainsAll: elements must be an array or slice")
+	}
+	
+	// Если элементов нет, возвращаем true (пустое множество содержится в любом множестве)
+	if elementsRv.Len() == 0 {
+		return true, nil
+	}
+	
+	// Проверяем каждый элемент
+	for i := 0; i < elementsRv.Len(); i++ {
+		elem := elementsRv.Index(i).Interface()
+		// Проверяем, содержится ли элемент в collection
+		contains, err := a.Contains(collection, elem)
+		if err != nil {
+			return false, err
+		}
+		if b, ok := contains.(bool); !ok || !b {
+			return false, nil
+		}
+	}
+	
+	return true, nil
 }
 
 // StartsWith проверяет, начинается ли строка с подстроки.
