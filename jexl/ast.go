@@ -1048,3 +1048,47 @@ func (r *ReturnNode) SourceText() string {
 func (r *ReturnNode) Value() Node {
 	return r.value
 }
+
+// VarNode представляет объявление переменной var x или var x = value.
+type VarNode struct {
+	name   *IdentifierNode
+	value  Node
+	source string
+}
+
+// NewVarNode создаёт новый VarNode.
+func NewVarNode(name *IdentifierNode, value Node, source string) *VarNode {
+	return &VarNode{
+		name:   name,
+		value:  value,
+		source: source,
+	}
+}
+
+// Children возвращает дочерние узлы.
+func (v *VarNode) Children() []Node {
+	if v.value != nil {
+		return []Node{v.name, v.value}
+	}
+	return []Node{v.name}
+}
+
+// String возвращает строковое представление.
+func (v *VarNode) String() string {
+	return v.source
+}
+
+// SourceText возвращает исходный текст.
+func (v *VarNode) SourceText() string {
+	return v.source
+}
+
+// Name возвращает имя переменной.
+func (v *VarNode) Name() *IdentifierNode {
+	return v.name
+}
+
+// Value возвращает значение переменной (может быть nil).
+func (v *VarNode) Value() Node {
+	return v.value
+}

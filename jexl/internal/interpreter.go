@@ -77,6 +77,11 @@ func (i *interpreter) interpret(node jexl.Node) (any, error) {
 		return nil, &ContinueError{}
 	case *jexl.ReturnNode:
 		return i.interpretReturn(n)
+	case *jexl.VarNode:
+		return i.interpretVar(n)
+	case nil:
+		// Пустое statement (;)
+		return nil, nil
 	default:
 		return nil, jexl.NewError("unsupported node type")
 	}
@@ -1315,6 +1320,29 @@ func (i *interpreter) interpretBlock(node *jexl.BlockNode) (any, error) {
 		}
 	}
 	return result, nil
+}
+
+// interpretVar выполняет var statement (var x или var x = value).
+func (i *interpreter) interpretVar(node *jexl.VarNode) (any, error) {
+	if i.context == nil {
+		return nil, jexl.NewError("context is nil")
+	}
+	
+	name := node.Name().Name()
+	
+	// Если есть значение, вычисляем его и присваиваем
+	if node.Value() != nil {
+		value, err := i.interpret(node.Value())
+		if err != nil {
+			return nil, err
+		}
+		i.context.Set(name, value)
+		return value, nil
+	}
+	
+	// Если нет значения, просто объявляем переменную как nil
+	i.context.Set(name, nil)
+	return nil, nil
 }
 
 // interpretReturn выполняет return statement.

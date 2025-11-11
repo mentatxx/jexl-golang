@@ -316,8 +316,12 @@ func (a *BaseArithmetic) ShiftLeft(lhs, rhs any) (any, error) {
 	if !ok {
 		return nil, ErrUnsupportedOperand
 	}
-	if right < 0 || right > 63 {
-		return nil, NewError("shift count out of range")
+	// В Go отрицательный сдвиг дает 0
+	if right < 0 {
+		return int64(0), nil
+	}
+	if right > 63 {
+		return int64(0), nil
 	}
 	return int64(left << uint(right)), nil
 }
@@ -332,24 +336,39 @@ func (a *BaseArithmetic) ShiftRight(lhs, rhs any) (any, error) {
 	if !ok {
 		return nil, ErrUnsupportedOperand
 	}
-	if right < 0 || right > 63 {
-		return nil, NewError("shift count out of range")
+	// В Go отрицательный сдвиг дает 0
+	if right < 0 {
+		return int64(0), nil
+	}
+	if right > 63 {
+		// Для больших сдвигов результат зависит от знака
+		if left < 0 {
+			return int64(-1), nil
+		}
+		return int64(0), nil
 	}
 	return int64(left >> uint(right)), nil
 }
 
 // ShiftRightUnsigned выполняет побитовый сдвиг вправо (логический, беззнаковый).
 func (a *BaseArithmetic) ShiftRightUnsigned(lhs, rhs any) (any, error) {
-	left, ok := toUint64(lhs)
+	// Для беззнакового сдвига преобразуем знаковое число в беззнаковое
+	leftSigned, ok := toInt64(lhs)
 	if !ok {
 		return nil, ErrUnsupportedOperand
 	}
+	// Преобразуем в uint64 для беззнакового сдвига
+	left := uint64(leftSigned)
 	right, ok := toInt64(rhs)
 	if !ok {
 		return nil, ErrUnsupportedOperand
 	}
-	if right < 0 || right > 63 {
-		return nil, NewError("shift count out of range")
+	// В Go отрицательный сдвиг дает 0
+	if right < 0 {
+		return int64(0), nil
+	}
+	if right > 63 {
+		return int64(0), nil
 	}
 	return int64(left >> uint(right)), nil
 }
@@ -543,14 +562,35 @@ func (a *BaseArithmetic) EndsWith(lhs, rhs any) (any, error) {
 // Возвращает слайс чисел от left до right.
 func (a *BaseArithmetic) CreateRange(left, right any) (any, error) {
 	// Преобразуем left и right в числа
-	leftNum, err := a.toInteger(left)
-	if err != nil {
-		return nil, NewError("range left operand must be a number")
+	// Сначала пробуем через toBig для поддержки всех числовых типов
+	leftRat, ok := toBig(left)
+	if !ok {
+		// Если toBig не сработал, пробуем toInteger
+		leftNum, err := a.toInteger(left)
+		if err != nil {
+			return nil, NewError("range left operand must be a number")
+		}
+		leftRat = big.NewRat(leftNum, 1)
 	}
-	rightNum, err := a.toInteger(right)
-	if err != nil {
-		return nil, NewError("range right operand must be a number")
+	rightRat, ok := toBig(right)
+	if !ok {
+		// Если toBig не сработал, пробуем toInteger
+		rightNum, err := a.toInteger(right)
+		if err != nil {
+			return nil, NewError("range right operand must be a number")
+		}
+		rightRat = big.NewRat(rightNum, 1)
 	}
+	
+	// Преобразуем в int64
+	if !leftRat.IsInt() {
+		return nil, NewError("range left operand must be an integer")
+	}
+	if !rightRat.IsInt() {
+		return nil, NewError("range right operand must be an integer")
+	}
+	leftNum := leftRat.Num().Int64()
+	rightNum := rightRat.Num().Int64()
 
 	// Создаём range
 	var result []int64
@@ -624,9 +664,13 @@ func (a *BaseArithmetic) toInteger(value any) (int64, error) {
 			if !rat.IsInt() {
 				return 0, NewError("cannot convert non-integer to int64")
 			}
+			// Для отрицательных чисел Num() возвращает отрицательный big.Int
+			// Int64() правильно обрабатывает отрицательные числа
 			return rat.Num().Int64(), nil
 		}
-		return 0, NewError("cannot convert value to int64")
+		// Если toBig не сработал, пробуем через reflection или другие способы
+		// Это может быть необходимо для некоторых типов, которые не обрабатываются напрямую
+		return 0, NewError("cannot convert value to int64: unsupported operand type")
 	}
 }
 

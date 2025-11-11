@@ -48,6 +48,11 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 		if builder.peek().typ == tokenEOF {
 			break
 		}
+		// Пропускаем точку с запятой в начале
+		if builder.peek().typ == tokenSemicolon {
+			builder.next()
+			continue
+		}
 		// Пробуем распарсить statement, если не получается - expression
 		node, err := builder.parseStatement()
 		if err != nil {
@@ -61,13 +66,20 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 			}
 		}
 		ast.AddChild(node)
+		// Пропускаем точку с запятой после statement/expression
 		if builder.match(tokenSemicolon) {
+			// После точки с запятой продолжаем цикл
 			continue
 		}
-		if builder.peek().typ != tokenEOF {
-			return nil, builder.errorf("unexpected token %s", builder.peek().literal)
+		// Если нет точки с запятой, проверяем, не конец ли это
+		if builder.peek().typ == tokenEOF {
+			break
 		}
-		break
+		// Если следующий токен - не EOF и не точка с запятой, это может быть допустимо
+		// для последнего выражения в скрипте, но лучше попробовать продолжить парсинг
+		// Если это не точка с запятой и не EOF, пробуем продолжить парсинг следующего statement/expression
+		// Это позволяет обрабатывать скрипты без точек с запятой между statements
+		continue
 	}
 
 	if err := builder.expect(tokenEOF); err != nil {
@@ -104,7 +116,8 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 
 	switch tok.typ {
 	case tokenPlus, tokenMinus, tokenBang, tokenTilde:
-		operand, err := p.parseExpression(prefixPrecedence)
+		// Используем prefixPrecedence + 1 для правоассоциативности унарных операторов
+		operand, err := p.parseExpression(prefixPrecedence + 1)
 		if err != nil {
 			return nil, err
 		}
@@ -337,7 +350,12 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 		}
 
 		// Range оператор: left .. right
+		// Проверяем приоритет перед обработкой
 		if next.typ == tokenRange {
+			nextPrec := infixPrecedence(tokenRange)
+			if nextPrec < precedence {
+				break
+			}
 			p.next() // consume '..'
 			right, err := p.parseExpression(infixPrecedence(tokenRange) + 1)
 			if err != nil {
@@ -517,6 +535,8 @@ func (p *simpleParser) parseStatement() (jexl.Node, error) {
 		return jexl.NewContinueNode("continue"), nil
 	case tokenReturn:
 		return p.parseReturnStatement()
+	case tokenVar:
+		return p.parseVarStatement()
 	case tokenLBrace:
 		return p.parseBlock()
 	default:
@@ -709,7 +729,12 @@ func (p *simpleParser) parseWhileStatement() (jexl.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	source := fmt.Sprintf("while (%s) %s", condition.SourceText(), body.SourceText())
+	source := fmt.Sprintf("while (%s)", condition.SourceText())
+	if body != nil {
+		source += " " + body.SourceText()
+	} else {
+		source += " ;"
+	}
 	return jexl.NewWhileNode(condition, body, source), nil
 }
 
@@ -733,7 +758,13 @@ func (p *simpleParser) parseDoWhileStatement() (jexl.Node, error) {
 	if err := p.expect(tokenRParen); err != nil {
 		return nil, err
 	}
-	source := fmt.Sprintf("do %s while (%s)", body.SourceText(), condition.SourceText())
+	source := "do"
+	if body != nil {
+		source += " " + body.SourceText()
+	} else {
+		source += " ;"
+	}
+	source += fmt.Sprintf(" while (%s)", condition.SourceText())
 	return jexl.NewDoWhileNode(condition, body, source), nil
 }
 
@@ -753,6 +784,32 @@ func (p *simpleParser) parseReturnStatement() (jexl.Node, error) {
 		source += " " + value.SourceText()
 	}
 	return jexl.NewReturnNode(value, source), nil
+}
+
+// parseVarStatement парсит var statement (var x или var x = value)
+func (p *simpleParser) parseVarStatement() (jexl.Node, error) {
+	p.next() // consume 'var'
+	nameTok := p.next()
+	if nameTok.typ != tokenIdent {
+		return nil, p.errorf("expected identifier after 'var'")
+	}
+	name := jexl.NewIdentifierNode(nameTok.literal, nameTok.literal)
+	
+	var value jexl.Node
+	var err error
+	source := "var " + nameTok.literal
+	
+	// Проверяем, есть ли присваивание
+	if p.peek().typ == tokenEqual {
+		p.next() // consume '='
+		value, err = p.parseExpression(0)
+		if err != nil {
+			return nil, err
+		}
+		source += " = " + value.SourceText()
+	}
+	
+	return jexl.NewVarNode(name, value, source), nil
 }
 
 // parseBlock парсит блок { statements }
@@ -803,6 +860,12 @@ func (p *simpleParser) parseBlock() (jexl.Node, error) {
 func (p *simpleParser) parseStatementOrBlock() (jexl.Node, error) {
 	if p.peek().typ == tokenLBrace {
 		return p.parseBlock()
+	}
+	// Проверяем, является ли это пустым statement (;)
+	if p.peek().typ == tokenSemicolon {
+		p.next() // consume ';'
+		// Возвращаем nil для пустого statement
+		return nil, nil
 	}
 	node, err := p.parseStatement()
 	if err != nil {
@@ -1361,9 +1424,9 @@ func infixPrecedence(tt tokenType) int {
 		return 13
 	case tokenStar, tokenSlash, tokenPercent:
 		return 12
-	case tokenPlus, tokenMinus:
-		return 11
 	case tokenShiftLeft, tokenShiftRight, tokenShiftRightU:
+		return 11
+	case tokenPlus, tokenMinus:
 		return 10
 	case tokenLess, tokenLessEqual, tokenGreater, tokenGreaterEqual:
 		return 9
