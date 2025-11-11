@@ -3,6 +3,9 @@ package jexl
 import (
 	"fmt"
 	"math/big"
+	"reflect"
+	"regexp"
+	"strings"
 )
 
 // Arithmetic определяет операции, используемые движком.
@@ -18,6 +21,18 @@ type Arithmetic interface {
 	Modulo(a, b any) (any, error)
 	Negate(value any) (any, error)
 	ToBoolean(value any) (bool, error)
+	// Битовые операции
+	BitwiseAnd(a, b any) (any, error)
+	BitwiseOr(a, b any) (any, error)
+	BitwiseXor(a, b any) (any, error)
+	BitwiseComplement(value any) (any, error)
+	ShiftLeft(a, b any) (any, error)
+	ShiftRight(a, b any) (any, error)
+	ShiftRightUnsigned(a, b any) (any, error)
+	// Строковые операции
+	Contains(a, b any) (any, error)
+	StartsWith(a, b any) (any, error)
+	EndsWith(a, b any) (any, error)
 }
 
 // BaseArithmetic предоставляет простую реализацию с ограниченным функционалом.
@@ -240,6 +255,333 @@ var (
 	// ErrUnsupportedOperation сигнализирует о неподдерживаемой операции.
 	ErrUnsupportedOperation = NewError("unsupported operation")
 )
+
+// BitwiseAnd выполняет побитовую операцию AND.
+func (a *BaseArithmetic) BitwiseAnd(lhs, rhs any) (any, error) {
+	left, ok := toInt64(lhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	right, ok := toInt64(rhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	return int64(left & right), nil
+}
+
+// BitwiseOr выполняет побитовую операцию OR.
+func (a *BaseArithmetic) BitwiseOr(lhs, rhs any) (any, error) {
+	left, ok := toInt64(lhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	right, ok := toInt64(rhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	return int64(left | right), nil
+}
+
+// BitwiseXor выполняет побитовую операцию XOR.
+func (a *BaseArithmetic) BitwiseXor(lhs, rhs any) (any, error) {
+	left, ok := toInt64(lhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	right, ok := toInt64(rhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	return int64(left ^ right), nil
+}
+
+// BitwiseComplement выполняет побитовую операцию NOT (дополнение).
+func (a *BaseArithmetic) BitwiseComplement(value any) (any, error) {
+	v, ok := toInt64(value)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	return int64(^v), nil
+}
+
+// ShiftLeft выполняет побитовый сдвиг влево.
+func (a *BaseArithmetic) ShiftLeft(lhs, rhs any) (any, error) {
+	left, ok := toInt64(lhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	right, ok := toInt64(rhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	if right < 0 || right > 63 {
+		return nil, NewError("shift count out of range")
+	}
+	return int64(left << uint(right)), nil
+}
+
+// ShiftRight выполняет побитовый сдвиг вправо (арифметический).
+func (a *BaseArithmetic) ShiftRight(lhs, rhs any) (any, error) {
+	left, ok := toInt64(lhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	right, ok := toInt64(rhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	if right < 0 || right > 63 {
+		return nil, NewError("shift count out of range")
+	}
+	return int64(left >> uint(right)), nil
+}
+
+// ShiftRightUnsigned выполняет побитовый сдвиг вправо (логический, беззнаковый).
+func (a *BaseArithmetic) ShiftRightUnsigned(lhs, rhs any) (any, error) {
+	left, ok := toUint64(lhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	right, ok := toInt64(rhs)
+	if !ok {
+		return nil, ErrUnsupportedOperand
+	}
+	if right < 0 || right > 63 {
+		return nil, NewError("shift count out of range")
+	}
+	return int64(left >> uint(right)), nil
+}
+
+// toInt64 преобразует значение в int64 для битовых операций.
+func toInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int8:
+		return int64(v), true
+	case int16:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case int64:
+		return v, true
+	case uint:
+		return int64(v), true
+	case uint8:
+		return int64(v), true
+	case uint16:
+		return int64(v), true
+	case uint32:
+		return int64(v), true
+	case uint64:
+		if v <= uint64(^uint64(0)>>1) {
+			return int64(v), true
+		}
+		return 0, false
+	case *big.Rat:
+		if v.IsInt() {
+			return v.Num().Int64(), true
+		}
+		return 0, false
+	case *big.Int:
+		return v.Int64(), true
+	case float32:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case nil:
+		return 0, true // null coerced to 0
+	default:
+		return 0, false
+	}
+}
+
+// toUint64 преобразует значение в uint64 для беззнаковых операций.
+func toUint64(value any) (uint64, bool) {
+	switch v := value.(type) {
+	case int:
+		if v >= 0 {
+			return uint64(v), true
+		}
+		return 0, false
+	case int8:
+		if v >= 0 {
+			return uint64(v), true
+		}
+		return 0, false
+	case int16:
+		if v >= 0 {
+			return uint64(v), true
+		}
+		return 0, false
+	case int32:
+		if v >= 0 {
+			return uint64(v), true
+		}
+		return 0, false
+	case int64:
+		if v >= 0 {
+			return uint64(v), true
+		}
+		return 0, false
+	case uint:
+		return uint64(v), true
+	case uint8:
+		return uint64(v), true
+	case uint16:
+		return uint64(v), true
+	case uint32:
+		return uint64(v), true
+	case uint64:
+		return v, true
+	case *big.Rat:
+		if v.IsInt() && v.Sign() >= 0 {
+			return v.Num().Uint64(), true
+		}
+		return 0, false
+	case *big.Int:
+		if v.Sign() >= 0 {
+			return v.Uint64(), true
+		}
+		return 0, false
+	case float32:
+		if v >= 0 {
+			return uint64(v), true
+		}
+		return 0, false
+	case float64:
+		if v >= 0 {
+			return uint64(v), true
+		}
+		return 0, false
+	case nil:
+		return 0, true // null coerced to 0
+	default:
+		return 0, false
+	}
+}
+
+// Contains проверяет, содержит ли lhs rhs.
+// Для строк: проверяет соответствие регулярному выражению или подстроке
+// Для коллекций: проверяет наличие элемента
+func (a *BaseArithmetic) Contains(lhs, rhs any) (any, error) {
+	// Если lhs - строка, проверяем соответствие rhs (регулярное выражение или подстрока)
+	if ls, ok := lhs.(string); ok {
+		rs := fmt.Sprintf("%v", rhs)
+		// Пробуем как регулярное выражение
+		if matched, err := regexp.MatchString(rs, ls); err == nil && matched {
+			return true, nil
+		}
+		// Если не регулярное выражение, проверяем как подстроку
+		return strings.Contains(ls, rs), nil
+	}
+	
+	// Если rhs - строка, а lhs - нет, пробуем обратный порядок
+	if rs, ok := rhs.(string); ok {
+		ls := fmt.Sprintf("%v", lhs)
+		// Пробуем как регулярное выражение
+		if matched, err := regexp.MatchString(rs, ls); err == nil && matched {
+			return true, nil
+		}
+		// Если не регулярное выражение, проверяем как подстроку
+		return strings.Contains(ls, rs), nil
+	}
+	
+	// Для коллекций проверяем наличие элемента
+	rv := reflect.ValueOf(lhs)
+	switch rv.Kind() {
+	case reflect.Array, reflect.Slice:
+		for i := 0; i < rv.Len(); i++ {
+			elem := rv.Index(i).Interface()
+			// Используем улучшенное сравнение с приведением типов
+			if equals(elem, rhs) {
+				return true, nil
+			}
+			// Дополнительная проверка: пробуем преобразовать оба значения в числа
+			if ar, ok1 := toBig(elem); ok1 {
+				if br, ok2 := toBig(rhs); ok2 {
+					if ar.Cmp(br) == 0 {
+						return true, nil
+					}
+				}
+			}
+		}
+		return false, nil
+	case reflect.Map:
+		// Для мапы проверяем ключи
+		for _, key := range rv.MapKeys() {
+			if equals(key.Interface(), rhs) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	
+	// Для других типов пробуем преобразовать в строку
+	ls := fmt.Sprintf("%v", lhs)
+	rs := fmt.Sprintf("%v", rhs)
+	return strings.Contains(ls, rs), nil
+}
+
+// StartsWith проверяет, начинается ли строка с подстроки.
+func (a *BaseArithmetic) StartsWith(lhs, rhs any) (any, error) {
+	ls := fmt.Sprintf("%v", lhs)
+	rs := fmt.Sprintf("%v", rhs)
+	return strings.HasPrefix(ls, rs), nil
+}
+
+// EndsWith проверяет, заканчивается ли строка подстрокой.
+func (a *BaseArithmetic) EndsWith(lhs, rhs any) (any, error) {
+	ls := fmt.Sprintf("%v", lhs)
+	rs := fmt.Sprintf("%v", rhs)
+	return strings.HasSuffix(ls, rs), nil
+}
+
+// equals сравнивает два значения на равенство.
+func equals(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	
+	// Прямое сравнение
+	if a == b {
+		return true
+	}
+	
+	// Сравнение строк
+	if sa, ok := a.(string); ok {
+		if sb, ok := b.(string); ok {
+			return sa == sb
+		}
+		// Пробуем преобразовать b в строку
+		return sa == fmt.Sprintf("%v", b)
+	}
+	if sb, ok := b.(string); ok {
+		return fmt.Sprintf("%v", a) == sb
+	}
+	
+	// Сравнение чисел - используем toBig для приведения к общему типу
+	ar, ok1 := toBig(a)
+	br, ok2 := toBig(b)
+	if ok1 && ok2 {
+		return ar.Cmp(br) == 0
+	}
+	
+	// Для других типов пробуем прямое сравнение через reflection
+	va := reflect.ValueOf(a)
+	vb := reflect.ValueOf(b)
+	
+	// Если типы совпадают, используем прямое сравнение
+	if va.Type() == vb.Type() {
+		return va.Interface() == vb.Interface()
+	}
+	
+	// Пробуем преобразовать оба в строки и сравнить
+	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+}
 
 func toBig(value any) (*big.Rat, bool) {
 	switch v := value.(type) {

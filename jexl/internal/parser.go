@@ -103,12 +103,71 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 	var left jexl.Node
 
 	switch tok.typ {
-	case tokenPlus, tokenMinus, tokenBang:
+	case tokenPlus, tokenMinus, tokenBang, tokenTilde:
 		operand, err := p.parseExpression(prefixPrecedence)
 		if err != nil {
 			return nil, err
 		}
 		left = jexl.NewUnaryOpNode(tok.literal, operand, tok.literal+operand.SourceText())
+	case tokenPlusPlus:
+		// Префиксный инкремент: ++x
+		operand, err := p.parseExpression(prefixPrecedence)
+		if err != nil {
+			return nil, err
+		}
+		if !isAssignableTarget(operand) {
+			return nil, p.errorf("operand of increment must be assignable")
+		}
+		// ++x становится x = x + 1
+		one := jexl.NewLiteralNode(int64(1), "1")
+		addNode := jexl.NewBinaryOpNode("+", operand, one, fmt.Sprintf("%s + 1", operand.SourceText()))
+		left = jexl.NewAssignmentNode(operand, addNode, fmt.Sprintf("++%s", operand.SourceText()))
+	case tokenMinusMinus:
+		// Префиксный декремент: --x
+		operand, err := p.parseExpression(prefixPrecedence)
+		if err != nil {
+			return nil, err
+		}
+		if !isAssignableTarget(operand) {
+			return nil, p.errorf("operand of decrement must be assignable")
+		}
+		// --x становится x = x - 1
+		one := jexl.NewLiteralNode(int64(1), "1")
+		subNode := jexl.NewBinaryOpNode("-", operand, one, fmt.Sprintf("%s - 1", operand.SourceText()))
+		left = jexl.NewAssignmentNode(operand, subNode, fmt.Sprintf("--%s", operand.SourceText()))
+	case tokenEmpty:
+		// Оператор empty: empty x
+		operand, err := p.parseExpression(prefixPrecedence)
+		if err != nil {
+			return nil, err
+		}
+		// Создаём вызов функции empty(operand)
+		emptyIdent := jexl.NewIdentifierNode("empty", "empty")
+		args := []jexl.Node{operand}
+		left = jexl.NewMethodCallNode(nil, emptyIdent, args, fmt.Sprintf("empty(%s)", operand.SourceText()))
+	case tokenNot:
+		// Оператор not: not empty x или not x
+		next := p.peek()
+		if next.typ == tokenEmpty {
+			// not empty x
+			p.next() // consume 'empty'
+			operand, err := p.parseExpression(prefixPrecedence)
+			if err != nil {
+				return nil, err
+			}
+			// Создаём вызов функции empty(operand) и инвертируем результат
+			emptyIdent := jexl.NewIdentifierNode("empty", "empty")
+			args := []jexl.Node{operand}
+			emptyCall := jexl.NewMethodCallNode(nil, emptyIdent, args, fmt.Sprintf("empty(%s)", operand.SourceText()))
+			left = jexl.NewUnaryOpNode("!", emptyCall, fmt.Sprintf("not empty %s", operand.SourceText()))
+		} else {
+			// not x - обычное логическое отрицание
+			operand, err := p.parseExpression(prefixPrecedence)
+			if err != nil {
+				return nil, err
+			}
+			left = jexl.NewUnaryOpNode("!", operand, fmt.Sprintf("not %s", operand.SourceText()))
+		}
 	case tokenNumber:
 		value, err := parseNumberLiteral(tok.literal)
 		if err != nil {
@@ -172,6 +231,41 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 			prop := p.next()
 			propNode := jexl.NewIdentifierNode(prop.literal, prop.literal)
 			left = jexl.NewPropertyAccessNode(left, propNode, fmt.Sprintf("%s.%s", left.SourceText(), prop.literal))
+			continue
+		}
+
+		// Side-effect операторы: expr += value, expr -= value, и т.д.
+		if next.typ == tokenPlusEqual || next.typ == tokenMinusEqual ||
+			next.typ == tokenStarEqual || next.typ == tokenSlashEqual ||
+			next.typ == tokenPercentEqual {
+			if !isAssignableTarget(left) {
+				return nil, p.errorf("left-hand side of assignment is not assignable")
+			}
+			op := p.next() // consume оператор
+			right, err := p.parseExpression(infixPrecedence(next.typ))
+			if err != nil {
+				return nil, err
+			}
+			// Преобразуем side-effect оператор в обычное присваивание с операцией
+			// x += 3 становится x = x + 3
+			var opSymbol string
+			switch op.typ {
+			case tokenPlusEqual:
+				opSymbol = "+"
+			case tokenMinusEqual:
+				opSymbol = "-"
+			case tokenStarEqual:
+				opSymbol = "*"
+			case tokenSlashEqual:
+				opSymbol = "/"
+			case tokenPercentEqual:
+				opSymbol = "%"
+			}
+			// Создаём бинарную операцию left op right
+			opNode := jexl.NewBinaryOpNode(opSymbol, left, right, fmt.Sprintf("%s %s %s", left.SourceText(), opSymbol, right.SourceText()))
+			// Создаём присваивание left = (left op right)
+			source := fmt.Sprintf("%s %s %s", left.SourceText(), op.literal, right.SourceText())
+			left = jexl.NewAssignmentNode(left, opNode, source)
 			continue
 		}
 
@@ -432,9 +526,19 @@ func (p *simpleParser) parseIfStatement() (jexl.Node, error) {
 
 	var elseBranch jexl.Node
 	if p.match(tokenElse) {
-		elseBranch, err = p.parseStatementOrBlock()
-		if err != nil {
-			return nil, err
+		// Проверяем, является ли это else if
+		if p.peek().typ == tokenIf {
+			// Это else if - парсим как вложенный if
+			elseBranch, err = p.parseIfStatement()
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Обычный else
+			elseBranch, err = p.parseStatementOrBlock()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -825,6 +929,29 @@ const (
 	tokenOr
 	tokenQuestion
 	tokenQuestionQuestion
+	// Битовые операторы
+	tokenAmpersand      // &
+	tokenPipe           // |
+	tokenCaret          // ^
+	tokenTilde          // ~
+	tokenShiftLeft      // <<
+	tokenShiftRight     // >>
+	tokenShiftRightU    // >>>
+	// Строковые операторы
+	tokenContains       // =~
+	tokenStartsWith     // =^
+	tokenEndsWith       // =$
+	tokenNotContains    // !~
+	tokenNotStartsWith  // !^
+	tokenNotEndsWith    // !$
+	// Side-effect операторы
+	tokenPlusEqual      // +=
+	tokenMinusEqual     // -=
+	tokenStarEqual      // *=
+	tokenSlashEqual     // /=
+	tokenPercentEqual   // %=
+	tokenPlusPlus       // ++
+	tokenMinusMinus     // --
 	// Ключевые слова
 	tokenIf
 	tokenElse
@@ -835,6 +962,9 @@ const (
 	tokenContinue
 	tokenReturn
 	tokenVar
+	tokenEmpty
+	tokenSize
+	tokenNot
 )
 
 // token представляет токен.
@@ -881,14 +1011,35 @@ func (l *lexer) nextToken() token {
 
 	switch c {
 	case '+':
+		if l.match('=') {
+			return token{typ: tokenPlusEqual, literal: "+="}
+		}
+		if l.match('+') {
+			return token{typ: tokenPlusPlus, literal: "++"}
+		}
 		return token{typ: tokenPlus, literal: "+"}
 	case '-':
+		if l.match('=') {
+			return token{typ: tokenMinusEqual, literal: "-="}
+		}
+		if l.match('-') {
+			return token{typ: tokenMinusMinus, literal: "--"}
+		}
 		return token{typ: tokenMinus, literal: "-"}
 	case '*':
+		if l.match('=') {
+			return token{typ: tokenStarEqual, literal: "*="}
+		}
 		return token{typ: tokenStar, literal: "*"}
 	case '/':
+		if l.match('=') {
+			return token{typ: tokenSlashEqual, literal: "/="}
+		}
 		return token{typ: tokenSlash, literal: "/"}
 	case '%':
+		if l.match('=') {
+			return token{typ: tokenPercentEqual, literal: "%="}
+		}
 		return token{typ: tokenPercent, literal: "%"}
 	case '(':
 		return token{typ: tokenLParen, literal: "("}
@@ -914,18 +1065,51 @@ func (l *lexer) nextToken() token {
 		if l.match('=') {
 			return token{typ: tokenBangEqual, literal: "!="}
 		}
+		if l.match('~') {
+			return token{typ: tokenNotContains, literal: "!~"}
+		}
+		if l.match('^') {
+			return token{typ: tokenNotStartsWith, literal: "!^"}
+		}
+		if l.match('$') {
+			return token{typ: tokenNotEndsWith, literal: "!$"}
+		}
 		return token{typ: tokenBang, literal: "!"}
 	case '=':
 		if l.match('=') {
 			return token{typ: tokenEqualEqual, literal: "=="}
 		}
+		if l.match('~') {
+			return token{typ: tokenContains, literal: "=~"}
+		}
+		if l.match('^') {
+			return token{typ: tokenStartsWith, literal: "=^"}
+		}
+		if l.match('$') {
+			return token{typ: tokenEndsWith, literal: "=$"}
+		}
 		return token{typ: tokenEqual, literal: "="}
 	case '<':
+		if l.match('<') {
+			if l.match('=') {
+				return token{typ: tokenEOF, literal: "<<="} // TODO: поддержка <<=
+			}
+			return token{typ: tokenShiftLeft, literal: "<<"}
+		}
 		if l.match('=') {
 			return token{typ: tokenLessEqual, literal: "<="}
 		}
 		return token{typ: tokenLess, literal: "<"}
 	case '>':
+		if l.match('>') {
+			if l.match('>') {
+				return token{typ: tokenShiftRightU, literal: ">>>"}
+			}
+			if l.match('=') {
+				return token{typ: tokenEOF, literal: ">>="} // TODO: поддержка >>=
+			}
+			return token{typ: tokenShiftRight, literal: ">>"}
+		}
 		if l.match('=') {
 			return token{typ: tokenGreaterEqual, literal: ">="}
 		}
@@ -934,12 +1118,16 @@ func (l *lexer) nextToken() token {
 		if l.match('&') {
 			return token{typ: tokenAnd, literal: "&&"}
 		}
-		return l.errorToken("unexpected character")
+		return token{typ: tokenAmpersand, literal: "&"}
 	case '|':
 		if l.match('|') {
 			return token{typ: tokenOr, literal: "||"}
 		}
-		return l.errorToken("unexpected character")
+		return token{typ: tokenPipe, literal: "|"}
+	case '^':
+		return token{typ: tokenCaret, literal: "^"}
+	case '~':
+		return token{typ: tokenTilde, literal: "~"}
 	case '?':
 		if l.match('?') {
 			return token{typ: tokenQuestionQuestion, literal: "??"}
@@ -1024,6 +1212,12 @@ func (l *lexer) identifier() token {
 		tokType = tokenReturn
 	case "var":
 		tokType = tokenVar
+	case "empty":
+		tokType = tokenEmpty
+	case "size":
+		tokType = tokenSize
+	case "not":
+		tokType = tokenNot
 	case "eq":
 		tokType = tokenEqualEqual
 	case "ne":
@@ -1112,7 +1306,7 @@ const (
 
 func infixPrecedence(tt tokenType) int {
 	switch tt {
-	case tokenEqual:
+	case tokenEqual, tokenPlusEqual, tokenMinusEqual, tokenStarEqual, tokenSlashEqual, tokenPercentEqual:
 		return assignmentPrecedence
 	case tokenQuestion:
 		return ternaryPrecedence
@@ -1126,14 +1320,24 @@ func infixPrecedence(tt tokenType) int {
 		return 12
 	case tokenPlus, tokenMinus:
 		return 11
+	case tokenShiftLeft, tokenShiftRight, tokenShiftRightU:
+		return 10
 	case tokenLess, tokenLessEqual, tokenGreater, tokenGreaterEqual:
 		return 9
 	case tokenEqualEqual, tokenBangEqual:
 		return 8
-	case tokenAnd:
+	case tokenContains, tokenStartsWith, tokenEndsWith, tokenNotContains, tokenNotStartsWith, tokenNotEndsWith:
 		return 7
+	case tokenAmpersand:
+		return 5
+	case tokenCaret:
+		return 4
+	case tokenPipe:
+		return 3
+	case tokenAnd:
+		return 2
 	case tokenOr:
-		return 6
+		return 1
 	default:
 		return -1
 	}

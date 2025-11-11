@@ -195,6 +195,68 @@ func (i *interpreter) interpretBinaryOp(node *jexl.BinaryOpNode) (any, error) {
 			return true, nil
 		}
 		return arithmetic.ToBoolean(right)
+	case "&":
+		return arithmetic.BitwiseAnd(left, right)
+	case "|":
+		return arithmetic.BitwiseOr(left, right)
+	case "^":
+		return arithmetic.BitwiseXor(left, right)
+	case "<<":
+		return arithmetic.ShiftLeft(left, right)
+	case ">>":
+		return arithmetic.ShiftRight(left, right)
+	case ">>>":
+		return arithmetic.ShiftRightUnsigned(left, right)
+	case "=~":
+		// В JEXL x =~ y:
+		// - Если y - строка: проверяем соответствие x регулярному выражению y
+		// - Если y - коллекция: проверяем, содержится ли x в y
+		// Для строк: left =~ right означает "left соответствует right"
+		// Для коллекций: left =~ right означает "left содержится в right"
+		if _, ok := right.(string); ok {
+			// Строковый паттерн - проверяем соответствие left паттерну right
+			return arithmetic.Contains(left, right)
+		}
+		// Коллекция - проверяем, содержится ли left в right
+		return arithmetic.Contains(right, left)
+	case "=^":
+		return arithmetic.StartsWith(left, right)
+	case "=$":
+		return arithmetic.EndsWith(left, right)
+	case "!~":
+		// В JEXL x !~ y - отрицание =~
+		var result any
+		var err error
+		if _, ok := right.(string); ok {
+			result, err = arithmetic.Contains(left, right)
+		} else {
+			result, err = arithmetic.Contains(right, left)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if b, ok := result.(bool); ok {
+			return !b, nil
+		}
+		return nil, jexl.NewError("contains operation did not return boolean")
+	case "!^":
+		result, err := arithmetic.StartsWith(left, right)
+		if err != nil {
+			return nil, err
+		}
+		if b, ok := result.(bool); ok {
+			return !b, nil
+		}
+		return nil, jexl.NewError("startsWith operation did not return boolean")
+	case "!$":
+		result, err := arithmetic.EndsWith(left, right)
+		if err != nil {
+			return nil, err
+		}
+		if b, ok := result.(bool); ok {
+			return !b, nil
+		}
+		return nil, jexl.NewError("endsWith operation did not return boolean")
 	default:
 		return nil, jexl.WrapError("unsupported binary operation: "+node.Op(), nil, nil)
 	}
@@ -223,6 +285,8 @@ func (i *interpreter) interpretUnaryOp(node *jexl.UnaryOpNode) (any, error) {
 			return nil, err
 		}
 		return !b, nil
+	case "~":
+		return arithmetic.BitwiseComplement(value)
 	default:
 		return nil, jexl.WrapError("unsupported unary operation: "+node.Op(), nil, nil)
 	}
@@ -378,6 +442,20 @@ func (i *interpreter) interpretMethodCall(node *jexl.MethodCallNode) (any, error
 		return method.Invoke(obj, args)
 	}
 
+	// Проверяем встроенные функции
+	switch methodName {
+	case "empty":
+		if len(args) != 1 {
+			return nil, jexl.NewError("empty() requires exactly 1 argument")
+		}
+		return i.interpretEmpty(args[0])
+	case "size":
+		if len(args) != 1 {
+			return nil, jexl.NewError("size() requires exactly 1 argument")
+		}
+		return i.interpretSize(args[0])
+	}
+
 	// Функция верхнего уровня - ищем в контексте
 	if i.context == nil {
 		return nil, jexl.NewError("context is nil")
@@ -408,6 +486,45 @@ func (i *interpreter) interpretAssignment(node *jexl.AssignmentNode) (any, error
 		return nil, jexl.NewError("assignment node is nil")
 	}
 
+	// Проверяем, является ли это постфиксным инкрементом/декрементом
+	// По source text определяем: если заканчивается на ++ или --, это постфиксный
+	source := node.SourceText()
+	isPostfix := (len(source) >= 2 && source[len(source)-2:] == "++") ||
+		(len(source) >= 2 && source[len(source)-2:] == "--")
+	
+	var oldValue any
+	if isPostfix {
+		// Для постфиксного инкремента/декремента сохраняем старое значение ДО вычисления нового
+		switch target := node.Target().(type) {
+		case *jexl.IdentifierNode:
+			if i.context != nil {
+				oldValue = i.context.Get(target.Name())
+			}
+		case *jexl.PropertyAccessNode:
+			obj, err := i.interpret(target.Object())
+			if err == nil && obj != nil {
+				propIdent, ok := target.Property().(*jexl.IdentifierNode)
+				if ok {
+					uberspect := i.engine.Uberspect()
+					if uberspect != nil {
+						if propGet := uberspect.GetProperty(obj, propIdent.Name()); propGet != nil {
+							oldValue, _ = propGet.Invoke(obj)
+						}
+					}
+				}
+			}
+		case *jexl.IndexAccessNode:
+			obj, err := i.interpret(target.Object())
+			if err == nil && obj != nil {
+				_, err := i.interpret(target.Index())
+				if err == nil {
+					oldValue, _ = i.interpretIndexAccess(target)
+				}
+			}
+		}
+	}
+
+	// Вычисляем новое значение (это может изменить значение в контексте, если используется x + 1)
 	value, err := i.interpret(node.Value())
 	if err != nil {
 		return nil, err
@@ -418,12 +535,49 @@ func (i *interpreter) interpretAssignment(node *jexl.AssignmentNode) (any, error
 		if i.context == nil {
 			return nil, jexl.NewError("context is nil")
 		}
+		// Для постфиксного инкремента/декремента нужно вернуть старое значение
+		if isPostfix {
+			// Сохраняем старое значение перед присваиванием
+			if oldValue == nil {
+				// Если старое значение не было сохранено, пробуем восстановить из нового
+				arithmetic := i.engine.Arithmetic()
+				if arithmetic != nil {
+					one := int64(1)
+					if len(source) >= 2 && source[len(source)-2:] == "++" {
+						oldValue, _ = arithmetic.Subtract(value, one)
+					} else if len(source) >= 2 && source[len(source)-2:] == "--" {
+						oldValue, _ = arithmetic.Add(value, one)
+					}
+				}
+			}
+			// Устанавливаем новое значение
+			i.context.Set(target.Name(), value)
+			// Возвращаем старое значение
+			return oldValue, nil
+		}
+		// Для префиксного и обычного присваивания устанавливаем и возвращаем новое значение
 		i.context.Set(target.Name(), value)
 		return value, nil
 	case *jexl.PropertyAccessNode:
-		return i.assignProperty(target, value)
+		result, err := i.assignProperty(target, value)
+		if err != nil {
+			return nil, err
+		}
+		// Для постфиксного возвращаем старое значение
+		if isPostfix && oldValue != nil {
+			return oldValue, nil
+		}
+		return result, nil
 	case *jexl.IndexAccessNode:
-		return i.assignIndex(target, value)
+		result, err := i.assignIndex(target, value)
+		if err != nil {
+			return nil, err
+		}
+		// Для постфиксного возвращаем старое значение
+		if isPostfix && oldValue != nil {
+			return oldValue, nil
+		}
+		return result, nil
 	default:
 		return nil, jexl.NewError("unsupported assignment target")
 	}
@@ -1042,6 +1196,60 @@ func (i *interpreter) interpretBlock(node *jexl.BlockNode) (any, error) {
 }
 
 // interpretReturn выполняет return statement.
+// interpretEmpty проверяет, является ли значение пустым.
+func (i *interpreter) interpretEmpty(value any) (any, error) {
+	if value == nil {
+		return true, nil
+	}
+	
+	switch v := value.(type) {
+	case string:
+		return len(v) == 0, nil
+	case []any:
+		return len(v) == 0, nil
+	case map[string]any:
+		return len(v) == 0, nil
+	case bool:
+		return !v, nil
+	default:
+		// Для чисел проверяем, равно ли нулю
+		arithmetic := i.engine.Arithmetic()
+		if arithmetic == nil {
+			arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+		}
+		b, err := arithmetic.ToBoolean(value)
+		if err != nil {
+			return false, nil
+		}
+		return !b, nil
+	}
+}
+
+// interpretSize возвращает размер коллекции или строки.
+func (i *interpreter) interpretSize(value any) (any, error) {
+	if value == nil {
+		return int64(0), nil
+	}
+	
+	switch v := value.(type) {
+	case string:
+		return int64(len(v)), nil
+	case []any:
+		return int64(len(v)), nil
+	case map[string]any:
+		return int64(len(v)), nil
+	default:
+		// Для других типов пробуем использовать reflection
+		rv := reflect.ValueOf(value)
+		switch rv.Kind() {
+		case reflect.Array, reflect.Slice, reflect.Map, reflect.String:
+			return int64(rv.Len()), nil
+		default:
+			return nil, jexl.NewError("size() is not applicable to this type")
+		}
+	}
+}
+
 func (i *interpreter) interpretReturn(node *jexl.ReturnNode) (any, error) {
 	if node.Value() != nil {
 		return i.interpret(node.Value())
