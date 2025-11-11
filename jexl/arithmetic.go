@@ -132,15 +132,76 @@ func (a *BaseArithmetic) Compare(lhs, rhs any) (int, error) {
 	return al.Cmp(ar), nil
 }
 
+// formatNumber форматирует число для строковой конкатенации
+// hasFloat указывает, был ли один из операндов float
+func formatNumber(value any, hasFloat bool) string {
+	// Проверяем, не является ли это floatResult
+	if fr, ok := value.(*floatResult); ok {
+		// Это результат операции с float - форматируем как float
+		f, _ := fr.Rat.Float64()
+		if f == float64(int64(f)) {
+			return fmt.Sprintf("%.1f", f)
+		}
+		return fmt.Sprintf("%g", f)
+	}
+	
+	switch v := value.(type) {
+	case *big.Rat:
+		if v.IsInt() {
+			if hasFloat {
+				// Если один из операндов был float, выводим как float с .0
+				f, _ := v.Float64()
+				return fmt.Sprintf("%.1f", f)
+			}
+			// Если оба операнда были int, выводим как int
+			return v.Num().String()
+		}
+		// Дробное число - выводим как float
+		f, _ := v.Float64()
+		// Проверяем, является ли число целым (с учетом погрешности float)
+		if f == float64(int64(f)) {
+			return fmt.Sprintf("%.1f", f)
+		}
+		return fmt.Sprintf("%g", f)
+	case float32, float64:
+		// Для float всегда выводим с точкой, если это целое число - с .0
+		var f float64
+		if f32, ok := v.(float32); ok {
+			f = float64(f32)
+		} else {
+			f = v.(float64)
+		}
+		if f == float64(int64(f)) {
+			return fmt.Sprintf("%.1f", f)
+		}
+		return fmt.Sprintf("%g", f)
+	default:
+		return fmt.Sprintf("%v", value)
+	}
+}
+
+// isFloatNumber проверяет, является ли значение float
+func isFloatNumber(value any) bool {
+	switch value.(type) {
+	case float32, float64:
+		return true
+	}
+	return false
+}
+
 // Add складывает значения.
 func (a *BaseArithmetic) Add(lhs, rhs any) (any, error) {
 	// Специальная обработка для строковой конкатенации
 	if ls, ok := lhs.(string); ok {
-		rs := fmt.Sprintf("%v", rhs)
+		// Проверяем, был ли rhs результатом операции с float
+		hasFloat := isFloatNumber(rhs) || isResultFromFloat(rhs)
+		rs := formatNumber(rhs, hasFloat)
 		return ls + rs, nil
 	}
 	if rs, ok := rhs.(string); ok {
-		ls := fmt.Sprintf("%v", lhs)
+		// Проверяем, был ли lhs результатом операции с float
+		hasFloat := isFloatNumber(lhs) || isResultFromFloat(lhs)
+		ls := formatNumber(lhs, hasFloat)
 		return ls + rs, nil
 	}
 	
@@ -157,6 +218,9 @@ func (a *BaseArithmetic) Add(lhs, rhs any) (any, error) {
 
 // Subtract вычитает значения.
 func (a *BaseArithmetic) Subtract(lhs, rhs any) (any, error) {
+	// Проверяем, является ли один из операндов float
+	hasFloat := isFloatNumber(lhs) || isFloatNumber(rhs)
+	
 	al, ok := toBig(lhs)
 	if !ok {
 		return nil, ErrUnsupportedOperand
@@ -165,7 +229,50 @@ func (a *BaseArithmetic) Subtract(lhs, rhs any) (any, error) {
 	if !ok {
 		return nil, ErrUnsupportedOperand
 	}
-	return new(big.Rat).Sub(al, ar), nil
+	result := new(big.Rat).Sub(al, ar)
+	
+	// Если один из операндов был float, и результат целое число,
+	// оборачиваем результат, чтобы сохранить информацию о типе
+	if hasFloat && result.IsInt() {
+		// Возвращаем результат как есть, но при конкатенации со строками
+		// будет использоваться информация о том, что был float операнд
+		// Для этого используем специальный тип-обертку
+		return &floatResult{Rat: result}, nil
+	}
+	
+	return result, nil
+}
+
+// floatResult оборачивает big.Rat, чтобы сохранить информацию о том,
+// что результат был получен из операции с float операндом
+type floatResult struct {
+	Rat *big.Rat
+}
+
+// isResultFromFloat проверяет, является ли big.Rat результатом операции с float
+// Это эвристика: если big.Rat может быть точно представлен как float64,
+// то это может быть результат операции с float
+// Для целых чисел, которые могут быть точно представлены как float64,
+// мы предполагаем, что они могут быть результатом float операции
+func isResultFromFloat(value any) bool {
+	// Проверяем, не является ли это floatResult
+	if _, ok := value.(*floatResult); ok {
+		return true
+	}
+	
+	if rat, ok := value.(*big.Rat); ok {
+		if rat.IsInt() {
+			// Для целых чисел мы не можем точно определить, были ли исходные
+			// операнды float, поэтому возвращаем false - они должны
+			// форматироваться как int, если исходные операнды были int
+			// Проблема: если один из операндов был float, то результат должен
+			// быть float, но мы не знаем типы исходных операндов
+			return false
+		}
+		// Дробное число - скорее всего результат операции с float
+		return true
+	}
+	return false
 }
 
 // Multiply умножает значения.
@@ -763,6 +870,11 @@ func equals(a, b any) bool {
 }
 
 func toBig(value any) (*big.Rat, bool) {
+	// Проверяем, не является ли это floatResult
+	if fr, ok := value.(*floatResult); ok {
+		return new(big.Rat).Set(fr.Rat), true
+	}
+	
 	switch v := value.(type) {
 	case bool:
 		if v {

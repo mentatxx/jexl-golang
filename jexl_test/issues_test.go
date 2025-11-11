@@ -2,6 +2,7 @@ package jexl_test
 
 import (
 	"math/big"
+	"reflect"
 	"testing"
 
 	"github.com/mentatxx/jexl-golang/jexl"
@@ -956,6 +957,23 @@ func TestIssue407(t *testing.T) {
 		f, _ := v.Float64()
 		actual = f
 	default:
+		// Проверяем, не является ли это floatResult (внутренний тип из arithmetic.go)
+		// Используем рефлексию для доступа к полю Rat
+		rv := reflect.ValueOf(result)
+		if rv.Kind() == reflect.Ptr {
+			rv = rv.Elem()
+		}
+		if rv.Kind() == reflect.Struct {
+			// Проверяем, есть ли поле Rat типа *big.Rat
+			ratField := rv.FieldByName("Rat")
+			if ratField.IsValid() && ratField.Kind() == reflect.Ptr {
+				if rat, ok := ratField.Interface().(*big.Rat); ok {
+					f, _ := rat.Float64()
+					actual = f
+					break
+				}
+			}
+		}
 		t.Fatalf("Unexpected result type: %T", result)
 	}
 

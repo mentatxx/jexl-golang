@@ -53,6 +53,42 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 			builder.next()
 			continue
 		}
+		// Проверяем, не является ли следующий токен else или else if
+		// Если да, и последний добавленный узел - это IfNode, то это часть предыдущего if statement
+		if builder.peek().typ == tokenElse {
+			// Проверяем, есть ли последний узел и является ли он IfNode
+			children := ast.Children()
+			if len(children) > 0 {
+				if ifNode, ok := children[len(children)-1].(*jexl.IfNode); ok {
+					// Это else для предыдущего if - нужно добавить else branch
+					builder.next() // consume 'else'
+					if builder.peek().typ == tokenIf {
+						// Это else if - парсим как вложенный if
+						elseBranch, err := builder.parseIfStatement()
+						if err != nil {
+							return nil, err
+						}
+						// Обновляем IfNode с else branch
+						// Но IfNode неизменяем, нужно создать новый
+						// Проще всего - заменить последний узел новым IfNode с else branch
+						newIfNode := jexl.NewIfNode(ifNode.Condition(), ifNode.ThenBranch(), elseBranch, 
+							fmt.Sprintf("%s else %s", ifNode.SourceText(), elseBranch.SourceText()))
+						ast.SetChild(len(children)-1, newIfNode)
+						continue
+					} else {
+						// Обычный else
+						elseBranch, err := builder.parseStatementOrBlock()
+						if err != nil {
+							return nil, err
+						}
+						newIfNode := jexl.NewIfNode(ifNode.Condition(), ifNode.ThenBranch(), elseBranch,
+							fmt.Sprintf("%s else %s", ifNode.SourceText(), elseBranch.SourceText()))
+						ast.SetChild(len(children)-1, newIfNode)
+						continue
+					}
+				}
+			}
+		}
 		// Пробуем распарсить statement, если не получается - expression
 		node, err := builder.parseStatement()
 		if err != nil {
@@ -92,11 +128,12 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 
 // simpleParser реализует примитивный Pratt-парсер для базовой арифметики.
 type simpleParser struct {
-	info     *jexl.Info
-	source   string
-	features *jexl.Features
-	tokens   []token
-	pos      int
+	info      *jexl.Info
+	source    string
+	features  *jexl.Features
+	tokens    []token
+	pos       int
+	loopCount int // Счетчик вложенных циклов для проверки break/continue
 }
 
 func newSimpleParser(info *jexl.Info, source string, features *jexl.Features) *simpleParser {
@@ -394,8 +431,22 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 		}
 
 		// Тернарный оператор: condition ? trueExpr : falseExpr
+		// Или Elvis оператор: expr ?: defaultExpr
 		if next.typ == tokenQuestion && precedence < ternaryPrecedence {
 			p.next() // consume '?'
+			// Проверяем, не является ли это Elvis оператором ?:
+			if p.peek().typ == tokenColon {
+				// Это Elvis оператор ?: (expr ?: defaultExpr)
+				p.next() // consume ':'
+				defaultExpr, err := p.parseExpression(ternaryPrecedence)
+				if err != nil {
+					return nil, err
+				}
+				source := fmt.Sprintf("%s ?: %s", left.SourceText(), defaultExpr.SourceText())
+				left = jexl.NewElvisNode(left, defaultExpr, source)
+				continue
+			}
+			// Это тернарный оператор ? : (condition ? trueExpr : falseExpr)
 			trueExpr, err := p.parseExpression(ternaryPrecedence)
 			if err != nil {
 				return nil, err
@@ -412,7 +463,7 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 			continue
 		}
 
-		// Elvis оператор: expr ?: defaultExpr
+		// Elvis оператор: expr ?? defaultExpr
 		if next.typ == tokenQuestionQuestion {
 			p.next() // consume '??'
 			defaultExpr, err := p.parseExpression(infixPrecedence(tokenQuestionQuestion) + 1)
@@ -753,12 +804,20 @@ func (p *simpleParser) parseStatement() (jexl.Node, error) {
 		if p.features != nil && !p.features.SupportsLoops() {
 			return nil, p.errorf("loops are not enabled")
 		}
+		// Проверяем, что break используется внутри цикла
+		if p.loopCount == 0 {
+			return nil, p.errorf("break statement not within a loop")
+		}
 		p.next()
 		return jexl.NewBreakNode("break"), nil
 	case tokenContinue:
 		// Проверяем, включены ли циклы (continue используется в циклах)
 		if p.features != nil && !p.features.SupportsLoops() {
 			return nil, p.errorf("loops are not enabled")
+		}
+		// Проверяем, что continue используется внутри цикла
+		if p.loopCount == 0 {
+			return nil, p.errorf("continue statement not within a loop")
 		}
 		p.next()
 		return jexl.NewContinueNode("continue"), nil
@@ -796,6 +855,13 @@ func (p *simpleParser) parseIfStatement() (jexl.Node, error) {
 	// Проверяем, является ли следующий токен else
 	// Это может быть сразу после thenBranch или после точки с запятой (если thenBranch - это statement с точкой с запятой)
 	// Но в JEXL else может идти после if statement без точки с запятой между ними
+	// Пропускаем точку с запятой, если она есть перед else
+	if p.peek().typ == tokenSemicolon {
+		// Проверяем, не является ли следующий токен после точки с запятой else
+		if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].typ == tokenElse {
+			p.next() // consume ';'
+		}
+	}
 	if p.peek().typ == tokenElse {
 		p.next() // consume 'else'
 		// Проверяем, является ли это else if
@@ -828,6 +894,10 @@ func (p *simpleParser) parseForStatement() (jexl.Node, error) {
 	if err := p.expect(tokenLParen); err != nil {
 		return nil, err
 	}
+	
+	// Увеличиваем счетчик циклов
+	p.loopCount++
+	defer func() { p.loopCount-- }()
 
 	// Пробуем определить тип цикла: foreach (var x : items) или классический for
 	peek := p.peek()
@@ -961,6 +1031,10 @@ func (p *simpleParser) parseWhileStatement() (jexl.Node, error) {
 	if err := p.expect(tokenLParen); err != nil {
 		return nil, err
 	}
+	
+	// Увеличиваем счетчик циклов
+	p.loopCount++
+	defer func() { p.loopCount-- }()
 	condition, err := p.parseExpression(0)
 	if err != nil {
 		return nil, err
@@ -988,6 +1062,10 @@ func (p *simpleParser) parseDoWhileStatement() (jexl.Node, error) {
 		return nil, p.errorf("loops are not enabled")
 	}
 	p.next() // consume 'do'
+	
+	// Увеличиваем счетчик циклов
+	p.loopCount++
+	defer func() { p.loopCount-- }()
 	body, err := p.parseStatementOrBlock()
 	if err != nil {
 		return nil, err
@@ -1030,14 +1108,16 @@ func (p *simpleParser) parseReturnStatement() (jexl.Node, error) {
 	if next.typ != tokenSemicolon && next.typ != tokenEOF && next.typ != tokenRBrace && next.typ != tokenElse {
 		// Парсим выражение, но нужно быть осторожным - если следующее выражение заканчивается на else,
 		// то это не часть return, а начало else clause
-		// Пока что просто парсим выражение
+		// Парсим выражение с низким приоритетом, чтобы остановиться на else
 		value, err = p.parseExpression(0)
 		if err != nil {
 			return nil, err
 		}
 		// После парсинга выражения проверяем, не является ли следующий токен else
-		// Если да, то это ошибка - else не может быть частью выражения
-		// Но на самом деле, это нормально - else идет после return statement
+		// Если да, то это не часть return, а начало else clause - мы уже распарсили return statement
+		if p.peek().typ == tokenElse {
+			// else идет после return - это нормально, return statement закончен
+		}
 	}
 	source := "return"
 	if value != nil {

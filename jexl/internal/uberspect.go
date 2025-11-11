@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -105,6 +106,18 @@ func (u *uberspectImpl) GetProperty(obj any, identifier string) jexl.PropertyGet
 
 	val := reflect.ValueOf(obj)
 	if !val.IsValid() {
+		return nil
+	}
+
+	// Для строк, чисел и других примитивных типов не можем получить свойства
+	// (кроме методов, которые обрабатываются через GetMethod)
+	if val.Kind() == reflect.String || val.Kind() == reflect.Int ||
+		val.Kind() == reflect.Int8 || val.Kind() == reflect.Int16 ||
+		val.Kind() == reflect.Int32 || val.Kind() == reflect.Int64 ||
+		val.Kind() == reflect.Uint || val.Kind() == reflect.Uint8 ||
+		val.Kind() == reflect.Uint16 || val.Kind() == reflect.Uint32 ||
+		val.Kind() == reflect.Uint64 || val.Kind() == reflect.Float32 ||
+		val.Kind() == reflect.Float64 || val.Kind() == reflect.Bool {
 		return nil
 	}
 
@@ -266,10 +279,21 @@ func (u *uberspectImpl) GetMethod(obj any, name string, args []any) (jexl.Method
 		return nil, jexl.NewError("invalid object")
 	}
 
+	// Специальная обработка для строк (в Go строки не имеют методов)
+	if val.Kind() == reflect.String {
+		str := val.String()
+		return u.getStringMethod(str, name, args)
+	}
+
 	// Для указателей, разыменовываем для получения типа
 	typ := val.Type()
 	if typ.Kind() == reflect.Ptr {
 		typ = typ.Elem()
+		// Если указатель указывает на строку, обрабатываем как строку
+		if typ.Kind() == reflect.String && !val.IsNil() {
+			str := val.Elem().String()
+			return u.getStringMethod(str, name, args)
+		}
 	}
 
 	// Собираем все кандидаты методов
@@ -675,6 +699,141 @@ func (s *slicePropertySet) Invoke(obj any, value any) error {
 
 	elem.Set(val)
 	return nil
+}
+
+// getStringMethod возвращает метод для строки
+func (u *uberspectImpl) getStringMethod(str string, name string, args []any) (jexl.Method, error) {
+	switch name {
+	case "toLowerCase":
+		if len(args) != 0 {
+			return nil, jexl.NewError("toLowerCase() takes no arguments")
+		}
+		return &stringMethod{
+			name: name,
+			fn: func(s string, _ []any) (any, error) {
+				return strings.ToLower(s), nil
+			},
+		}, nil
+	case "toUpperCase":
+		if len(args) != 0 {
+			return nil, jexl.NewError("toUpperCase() takes no arguments")
+		}
+		return &stringMethod{
+			name: name,
+			fn: func(s string, _ []any) (any, error) {
+				return strings.ToUpper(s), nil
+			},
+		}, nil
+	case "substring":
+		if len(args) < 1 || len(args) > 2 {
+			return nil, jexl.NewError("substring() takes 1 or 2 arguments")
+		}
+		return &stringMethod{
+			name: name,
+			fn: func(s string, a []any) (any, error) {
+				// Преобразуем первый аргумент в int
+				start, err := u.toInt(a[0])
+				if err != nil {
+					return nil, err
+				}
+				if start < 0 || start > len(s) {
+					return nil, jexl.NewError("substring start index out of bounds")
+				}
+				
+				if len(a) == 1 {
+					// substring(start) - от start до конца
+					return s[start:], nil
+				}
+				
+				// substring(start, end) - от start до end
+				end, err := u.toInt(a[1])
+				if err != nil {
+					return nil, err
+				}
+				if end < start || end > len(s) {
+					return nil, jexl.NewError("substring end index out of bounds")
+				}
+				return s[start:end], nil
+			},
+		}, nil
+	case "length":
+		if len(args) != 0 {
+			return nil, jexl.NewError("length() takes no arguments")
+		}
+		return &stringMethod{
+			name: name,
+			fn: func(s string, _ []any) (any, error) {
+				return int64(len(s)), nil
+			},
+		}, nil
+	case "toString":
+		if len(args) != 0 {
+			return nil, jexl.NewError("toString() takes no arguments")
+		}
+		return &stringMethod{
+			name: name,
+			fn: func(s string, _ []any) (any, error) {
+				return s, nil
+			},
+		}, nil
+	default:
+		return nil, jexl.NewError(fmt.Sprintf("string method %s not found", name))
+	}
+}
+
+// toInt преобразует значение в int
+func (u *uberspectImpl) toInt(value any) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case int8:
+		return int(v), nil
+	case int16:
+		return int(v), nil
+	case int32:
+		return int(v), nil
+	case int64:
+		return int(v), nil
+	case uint:
+		return int(v), nil
+	case uint8:
+		return int(v), nil
+	case uint16:
+		return int(v), nil
+	case uint32:
+		return int(v), nil
+	case uint64:
+		return int(v), nil
+	case float32:
+		return int(v), nil
+	case float64:
+		return int(v), nil
+	case *big.Rat:
+		if !v.IsInt() {
+			return 0, jexl.NewError("cannot convert non-integer to int")
+		}
+		return int(v.Num().Int64()), nil
+	default:
+		return 0, jexl.NewError(fmt.Sprintf("cannot convert %T to int", value))
+	}
+}
+
+// stringMethod реализует jexl.Method для строк
+type stringMethod struct {
+	name string
+	fn   func(string, []any) (any, error)
+}
+
+func (s *stringMethod) Name() string {
+	return s.name
+}
+
+func (s *stringMethod) Invoke(target any, args []any) (any, error) {
+	str, ok := target.(string)
+	if !ok {
+		return nil, jexl.NewError("string method called on non-string")
+	}
+	return s.fn(str, args)
 }
 
 // Реализация Method

@@ -46,6 +46,13 @@ func (s *ScriptNode) AddChild(child Node) {
 	}
 }
 
+// SetChild устанавливает дочерний узел по индексу.
+func (s *ScriptNode) SetChild(index int, child Node) {
+	if index >= 0 && index < len(s.children) && child != nil {
+		s.children[index] = child
+	}
+}
+
 // String возвращает строковое представление.
 func (s *ScriptNode) String() string {
 	return s.source

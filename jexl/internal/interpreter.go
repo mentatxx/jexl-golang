@@ -97,7 +97,16 @@ func (i *interpreter) interpretScript(node *jexl.ScriptNode) (any, error) {
 	for _, child := range node.Children() {
 		result, err = i.interpret(child)
 		if err != nil {
+			// Проверяем, не является ли это ReturnError
+			if returnErr, ok := err.(*ReturnError); ok {
+				// Return statement - возвращаем значение и прекращаем выполнение
+				return returnErr.Value, nil
+			}
 			return nil, err
+		}
+		// Проверяем, не является ли результат ReturnError (на случай, если return вернул ошибку как значение)
+		if returnErr, ok := result.(*ReturnError); ok {
+			return returnErr.Value, nil
 		}
 	}
 
@@ -311,6 +320,26 @@ func (i *interpreter) interpretUnaryOp(node *jexl.UnaryOpNode) (any, error) {
 
 // interpretPropertyAccess выполняет PropertyAccessNode.
 func (i *interpreter) interpretPropertyAccess(node *jexl.PropertyAccessNode) (any, error) {
+	// Сначала проверяем, не является ли это переменной с точкой в имени (ant-style)
+	// Например, foo.bar может быть переменной с именем "foo.bar"
+	objNode := node.Object()
+	objIdent, ok := objNode.(*jexl.IdentifierNode)
+	if ok {
+		objName := objIdent.Name()
+		propNode := node.Property()
+		propIdent, ok := propNode.(*jexl.IdentifierNode)
+		if ok {
+			propName := propIdent.Name()
+			// Формируем имя переменной с точкой
+			varName := objName + "." + propName
+			// Проверяем, существует ли переменная с таким именем в контексте
+			if i.context != nil && i.context.Has(varName) {
+				return i.context.Get(varName), nil
+			}
+		}
+	}
+
+	// Если это не переменная с точкой в имени, интерпретируем как доступ к свойству
 	obj, err := i.interpret(node.Object())
 	if err != nil {
 		return nil, err
@@ -534,6 +563,18 @@ func (i *interpreter) interpretMethodCall(node *jexl.MethodCallNode) (any, error
 
 		method, err := uberspect.GetMethod(obj, methodName, args)
 		if err != nil || method == nil {
+			// Если метод не найден, проверяем, не является ли свойство Script'ом
+			propGet := uberspect.GetProperty(obj, methodName)
+			if propGet != nil {
+				propValue, err := propGet.Invoke(obj)
+				if err == nil && propValue != nil {
+					// Если свойство - это Script, вызываем его
+					if script, ok := propValue.(jexl.Script); ok {
+						return script.Execute(i.context, args...)
+					}
+				}
+			}
+			
 			if i.options != nil && i.options.Strict() {
 				return nil, jexl.NewError("method not found: " + methodName)
 			}
@@ -556,19 +597,6 @@ func (i *interpreter) interpretMethodCall(node *jexl.MethodCallNode) (any, error
 		}
 		return i.interpretSize(args[0])
 	}
-
-	// Проверяем, не является ли methodName lambda функцией или Script
-	// Если target - это lambda (Script), вызываем его
-	if targetNode := node.Target(); targetNode != nil {
-		target, err := i.interpret(targetNode)
-		if err != nil {
-			return nil, err
-		}
-		// Если target - это Script (lambda), вызываем его
-		if script, ok := target.(jexl.Script); ok {
-			return script.Execute(i.context, args...)
-		}
-	}
 	
 	// Функция верхнего уровня - ищем в контексте
 	if i.context == nil {
@@ -585,6 +613,11 @@ func (i *interpreter) interpretMethodCall(node *jexl.MethodCallNode) (any, error
 	funcValue := i.context.Get(methodName)
 	if funcValue == nil {
 		return nil, nil
+	}
+
+	// Проверяем, является ли значение Script'ом
+	if script, ok := funcValue.(jexl.Script); ok {
+		return script.Execute(i.context, args...)
 	}
 
 	// Попытка вызвать как функцию
@@ -1372,7 +1405,29 @@ func (i *interpreter) interpretLambda(node *jexl.LambdaNode) (any, error) {
 	return closure, nil
 }
 
+// ReturnError используется для возврата значения из скрипта.
+type ReturnError struct {
+	Value any
+}
+
+func (e *ReturnError) Error() string {
+	return "return"
+}
+
 // interpretReturn выполняет return statement.
+func (i *interpreter) interpretReturn(node *jexl.ReturnNode) (any, error) {
+	var value any
+	var err error
+	if node.Value() != nil {
+		value, err = i.interpret(node.Value())
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Возвращаем специальную ошибку, которая будет обработана в interpretScript
+	return nil, &ReturnError{Value: value}
+}
+
 // interpretEmpty проверяет, является ли значение пустым.
 func (i *interpreter) interpretEmpty(value any) (any, error) {
 	if value == nil {
@@ -1427,9 +1482,3 @@ func (i *interpreter) interpretSize(value any) (any, error) {
 	}
 }
 
-func (i *interpreter) interpretReturn(node *jexl.ReturnNode) (any, error) {
-	if node.Value() != nil {
-		return i.interpret(node.Value())
-	}
-	return nil, nil
-}
