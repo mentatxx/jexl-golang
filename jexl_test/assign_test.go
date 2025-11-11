@@ -263,3 +263,291 @@ func TestExpressionAssignment(t *testing.T) {
 	}
 }
 
+// TestAntish тестирует присваивание через точку (ant-style)
+func TestAntish(t *testing.T) {
+	type Froboz struct {
+		Value int
+	}
+
+	builder := jexl.NewBuilder()
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+	froboz := &Froboz{Value: 0}
+	ctx.Set("froboz", froboz)
+
+	assignExpr, err := engine.CreateExpression(nil, "froboz.Value = 10")
+	if err != nil {
+		t.Fatalf("Failed to create assign expression: %v", err)
+	}
+
+	checkExpr, err := engine.CreateExpression(nil, "froboz.Value")
+	if err != nil {
+		t.Fatalf("Failed to create check expression: %v", err)
+	}
+
+	result, err := assignExpr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate assign: %v", err)
+	}
+
+	var resultInt int
+	switch v := result.(type) {
+	case int:
+		resultInt = v
+	case int64:
+		resultInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", result)
+		} else {
+			resultInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected result type: %T, value: %v", result, result)
+	}
+
+	if resultInt != 10 {
+		t.Errorf("Expected 10, got %d", resultInt)
+	}
+
+	checkResult, err := checkExpr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate check: %v", err)
+	}
+
+	var checkInt int
+	switch v := checkResult.(type) {
+	case int:
+		checkInt = v
+	case int64:
+		checkInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", checkResult)
+		} else {
+			checkInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected check result type: %T, value: %v", checkResult, checkResult)
+	}
+
+	if checkInt != 10 {
+		t.Errorf("Expected check to return 10, got %d", checkInt)
+	}
+}
+
+// FrobozBeanish - структура для теста TestBeanish
+type FrobozBeanish struct {
+	value int
+}
+
+// GetValue возвращает значение
+func (f *FrobozBeanish) GetValue() int {
+	return f.value
+}
+
+// SetValue устанавливает значение
+func (f *FrobozBeanish) SetValue(v int) {
+	f.value = v
+}
+
+// TestBeanish тестирует присваивание через getter/setter
+func TestBeanish(t *testing.T) {
+
+	builder := jexl.NewBuilder()
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+	froboz := &FrobozBeanish{value: -169}
+	ctx.Set("froboz", froboz)
+
+	assignExpr, err := engine.CreateExpression(nil, "froboz.value = 10")
+	if err != nil {
+		t.Fatalf("Failed to create assign expression: %v", err)
+	}
+
+	checkExpr, err := engine.CreateExpression(nil, "froboz.value")
+	if err != nil {
+		t.Fatalf("Failed to create check expression: %v", err)
+	}
+
+	result, err := assignExpr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate assign: %v", err)
+	}
+
+	var resultInt int
+	switch v := result.(type) {
+	case int:
+		resultInt = v
+	case int64:
+		resultInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", result)
+		} else {
+			resultInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected result type: %T, value: %v", result, result)
+	}
+
+	if resultInt != 10 {
+		t.Errorf("Expected 10, got %d", resultInt)
+	}
+
+	checkResult, err := checkExpr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate check: %v", err)
+	}
+
+	var checkInt int
+	switch v := checkResult.(type) {
+	case int:
+		checkInt = v
+	case int64:
+		checkInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", checkResult)
+		} else {
+			checkInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected check result type: %T, value: %v", checkResult, checkResult)
+	}
+
+	if checkInt != 10 {
+		t.Errorf("Expected check to return 10, got %d", checkInt)
+	}
+}
+
+// TestArrayAssignmentIndex тестирует присваивание через индекс массива
+func TestArrayAssignmentIndex(t *testing.T) {
+	type Froboz struct {
+		data map[string]any
+	}
+
+	builder := jexl.NewBuilder()
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+	froboz := &Froboz{data: make(map[string]any)}
+	ctx.Set("froboz", froboz)
+
+	// Используем мапу для хранения данных
+	data := make(map[string]any)
+	ctx.Set("frobozData", data)
+
+	assignExpr, err := engine.CreateExpression(nil, "frobozData[\"value\"] = 10")
+	if err != nil {
+		t.Fatalf("Failed to create assign expression: %v", err)
+	}
+
+	checkExpr, err := engine.CreateExpression(nil, "frobozData[\"value\"]")
+	if err != nil {
+		t.Fatalf("Failed to create check expression: %v", err)
+	}
+
+	result, err := assignExpr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate assign: %v", err)
+	}
+
+	var resultInt int
+	switch v := result.(type) {
+	case int:
+		resultInt = v
+	case int64:
+		resultInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", result)
+		} else {
+			resultInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected result type: %T, value: %v", result, result)
+	}
+
+	if resultInt != 10 {
+		t.Errorf("Expected 10, got %d", resultInt)
+	}
+
+	checkResult, err := checkExpr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate check: %v", err)
+	}
+
+	var checkInt int
+	switch v := checkResult.(type) {
+	case int:
+		checkInt = v
+	case int64:
+		checkInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", checkResult)
+		} else {
+			checkInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected check result type: %T, value: %v", checkResult, checkResult)
+	}
+
+	if checkInt != 10 {
+		t.Errorf("Expected check to return 10, got %d", checkInt)
+	}
+}
+
+// TestMiniAssignment тестирует простое присваивание переменной
+func TestMiniAssignment(t *testing.T) {
+	builder := jexl.NewBuilder()
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+
+	expr, err := engine.CreateExpression(nil, "quux = 10")
+	if err != nil {
+		t.Fatalf("Failed to create expression: %v", err)
+	}
+
+	result, err := expr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate: %v", err)
+	}
+
+	var resultInt int
+	switch v := result.(type) {
+	case int:
+		resultInt = v
+	case int64:
+		resultInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", result)
+		} else {
+			resultInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected result type: %T, value: %v", result, result)
+	}
+
+	if resultInt != 10 {
+		t.Errorf("Expected 10, got %d", resultInt)
+	}
+}
+

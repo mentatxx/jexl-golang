@@ -4,6 +4,20 @@ import (
 	"github.com/mentatxx/jexl-golang/jexl"
 )
 
+// getBaseContext извлекает базовый контекст из argumentContext, если это возможно
+func getBaseContext(ctx jexl.Context) jexl.Context {
+	if ctx == nil {
+		return nil
+	}
+	// Проверяем, является ли контекст argumentContext
+	// argumentContext находится в том же пакете, поэтому можем использовать type assertion
+	// Но нам нужно проверить через интерфейс или рефлексию
+	// Проще всего - использовать интерфейс для получения базового контекста
+	// Но для этого нужно добавить метод в Context или использовать другой подход
+	// Временно просто возвращаем контекст как есть
+	return ctx
+}
+
 // closure реализует jexl.Script для lambda функций с захватом контекста.
 // Порт org.apache.commons.jexl3.internal.Closure.
 type closure struct {
@@ -24,6 +38,12 @@ func NewClosure(engine jexl.Engine, lambda *jexl.LambdaNode, capturedContext jex
 	}
 	scriptNode.SetParameters(params)
 	
+	// Создаём snapshot контекста для захвата переменных
+	// В Java версии closure захватывает ссылку на контекст, а не копию
+	// Это позволяет видеть изменения переменных после создания closure
+	// Но для правильной работы нужно использовать ссылку на контекст, а не копию
+	var snapshot jexl.Context = capturedContext
+	
 	baseScript := &script{
 		engine: engine,
 		source: lambda.SourceText(),
@@ -32,7 +52,7 @@ func NewClosure(engine jexl.Engine, lambda *jexl.LambdaNode, capturedContext jex
 	
 	return &closure{
 		script:          baseScript,
-		capturedContext: capturedContext,
+		capturedContext: snapshot,
 	}
 }
 
@@ -49,7 +69,8 @@ func (c *closure) Execute(ctx jexl.Context, args ...any) (any, error) {
 		}
 	}
 	
-	// Используем захваченный контекст как базовый, если переданный контекст nil
+	// Используем переданный контекст как базовый, если он есть
+	// Если переданный контекст nil, используем захваченный контекст
 	baseCtx := ctx
 	if baseCtx == nil {
 		baseCtx = c.capturedContext
@@ -58,8 +79,20 @@ func (c *closure) Execute(ctx jexl.Context, args ...any) (any, error) {
 		baseCtx = jexl.NewMapContext()
 	}
 	
-	// Создаём объединённый контекст: параметры -> захваченный контекст -> переданный контекст
-	execCtx := newClosureContext(baseCtx, c.capturedContext, paramValues)
+	// Если базовый контекст - это argumentContext, извлекаем его базовый контекст
+	// Это позволяет видеть переменные, установленные в скрипте (например, через var)
+	if argCtx, ok := baseCtx.(*argumentContext); ok {
+		baseCtx = argCtx.base
+	}
+	
+	// Создаём объединённый контекст: параметры -> базовый контекст (где могут быть переменные после создания closure) -> захваченный контекст
+	// Важно: базовый контекст проверяется первым, чтобы видеть переменные, установленные после создания closure
+	// Если базовый контекст и захваченный контекст - это один и тот же объект, используем только базовый
+	var capturedCtx jexl.Context = c.capturedContext
+	if baseCtx == capturedCtx {
+		capturedCtx = nil // Избегаем двойной проверки одного и того же контекста
+	}
+	execCtx := newClosureContext(baseCtx, capturedCtx, paramValues)
 	
 	// Выполняем тело lambda напрямую через интерпретатор
 	interp := newInterpreter(c.engine, execCtx)
@@ -86,15 +119,19 @@ func (c *closureContext) Get(name string) any {
 	if val, ok := c.paramValues[name]; ok {
 		return val
 	}
-	// Затем захваченный контекст
+	// Затем базовый контекст (где могут быть установлены переменные после создания closure)
+	// Базовый контекст может быть argumentContext, который содержит параметры скрипта и базовый контекст
+	if c.baseCtx != nil {
+		// Проверяем Has перед Get, чтобы избежать ошибок
+		if c.baseCtx.Has(name) {
+			return c.baseCtx.Get(name)
+		}
+	}
+	// Затем захваченный контекст (для переменных, установленных до создания closure)
 	if c.capturedCtx != nil {
 		if c.capturedCtx.Has(name) {
 			return c.capturedCtx.Get(name)
 		}
-	}
-	// Затем базовый контекст
-	if c.baseCtx != nil {
-		return c.baseCtx.Get(name)
 	}
 	return nil
 }
@@ -103,11 +140,13 @@ func (c *closureContext) Has(name string) bool {
 	if _, ok := c.paramValues[name]; ok {
 		return true
 	}
-	if c.capturedCtx != nil && c.capturedCtx.Has(name) {
+	// Сначала проверяем базовый контекст
+	if c.baseCtx != nil && c.baseCtx.Has(name) {
 		return true
 	}
-	if c.baseCtx != nil {
-		return c.baseCtx.Has(name)
+	// Затем захваченный контекст
+	if c.capturedCtx != nil && c.capturedCtx.Has(name) {
+		return true
 	}
 	return false
 }

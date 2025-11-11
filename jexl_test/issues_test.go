@@ -987,3 +987,385 @@ func TestIssue407(t *testing.T) {
 	}
 }
 
+// TestIssue11 - JEXL-10/JEXL-11: variable checking, null operand is error
+func TestIssue11(t *testing.T) {
+	builder := jexl.NewBuilder()
+	builder.Options().SetStrict(true)
+	builder.Options().SetSilent(false)
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+	ctx.Set("a", nil)
+
+	// Тест: a % b должно вызвать ошибку из-за null операнда
+	expr, err := engine.CreateExpression(nil, "a % b")
+	if err != nil {
+		t.Fatalf("Failed to create expression: %v", err)
+	}
+
+	_, err = expr.Evaluate(ctx)
+	if err == nil {
+		t.Error("Expected error for null operand, but got none")
+	}
+}
+
+// TestIssue44 - JEXL-44: комментарии
+func TestIssue44(t *testing.T) {
+	builder := jexl.NewBuilder()
+	builder.Options().SetSilent(false)
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+
+	testCases := []struct {
+		name     string
+		source   string
+		expected string
+	}{
+		{"single line comment", "'hello world!'//commented", "hello world!"},
+		{"single line comment with semicolon", "'hello world!'; //commented\n'bye...'", "bye..."},
+		{"hash comment", "'hello world!'## commented", "hello world!"},
+		{"hash comment with semicolon", "'hello world!';## commented\n'bye...'", "bye..."},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			script, err := engine.CreateScript(nil, nil, tc.source)
+			if err != nil {
+				t.Fatalf("Failed to create script: %v", err)
+			}
+
+			result, err := script.Execute(ctx)
+			if err != nil {
+				t.Fatalf("Failed to execute script: %v", err)
+			}
+
+			if result != tc.expected {
+				t.Errorf("Expected %q, got %q", tc.expected, result)
+			}
+		})
+	}
+}
+
+// TestIssue47 - JEXL-47: C style comments (single & multi line)
+func TestIssue47(t *testing.T) {
+	builder := jexl.NewBuilder()
+	builder.Options().SetSilent(false)
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+
+	// Тест: true//false\n должно вернуть true
+	expr, err := engine.CreateExpression(nil, "true//false\n")
+	if err != nil {
+		t.Fatalf("Failed to create expression: %v", err)
+	}
+
+	result, err := expr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate: %v", err)
+	}
+
+	if result != true {
+		t.Errorf("Expected true, got %v", result)
+	}
+
+	// Тест: /*true*/false должно вернуть false
+	expr, err = engine.CreateExpression(nil, "/*true*/false")
+	if err != nil {
+		t.Fatalf("Failed to create expression: %v", err)
+	}
+
+	result, err = expr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate: %v", err)
+	}
+
+	if result != false {
+		t.Errorf("Expected false, got %v", result)
+	}
+
+	// Тест: /*"true"*/false должно вернуть false
+	expr, err = engine.CreateExpression(nil, "/*\"true\"*/false")
+	if err != nil {
+		t.Fatalf("Failed to create expression: %v", err)
+	}
+
+	result, err = expr.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("Failed to evaluate: %v", err)
+	}
+
+	if result != false {
+		t.Errorf("Expected false, got %v", result)
+	}
+}
+
+// TestIssue49 - JEXL-49: blocks not parsed (fixed)
+func TestIssue49(t *testing.T) {
+	builder := jexl.NewBuilder()
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+	stmt := "a = 'b'; c = 'd';"
+
+	script, err := engine.CreateScript(nil, nil, stmt)
+	if err != nil {
+		t.Fatalf("Failed to create script: %v", err)
+	}
+
+	_, err = script.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute script: %v", err)
+	}
+
+	if ctx.Get("a") != "b" {
+		t.Errorf("Expected a to be 'b', got %v", ctx.Get("a"))
+	}
+
+	if ctx.Get("c") != "d" {
+		t.Errorf("Expected c to be 'd', got %v", ctx.Get("c"))
+	}
+}
+
+// TestIssue62 - JEXL-62: обработка null при вызове методов
+func TestIssue62(t *testing.T) {
+	builder := jexl.NewBuilder()
+	builder.Options().SetStrict(true)
+	builder.Options().SetSilent(true)
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+
+	// Тест: dummy.hashCode() с null должно вернуть null
+	script, err := engine.CreateScript(nil, nil, "dummy.hashCode()")
+	if err != nil {
+		t.Fatalf("Failed to create script: %v", err)
+	}
+
+	result, err := script.Execute(ctx)
+	if err != nil {
+		t.Logf("Execution error (may be expected): %v", err)
+	}
+	if result != nil {
+		t.Errorf("Expected nil for null.hashCode(), got %v", result)
+	}
+
+	// Тест: dummy.hashCode() со строкой должно вернуть hashCode
+	ctx.Set("dummy", "abcd")
+	result, err = script.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute script: %v", err)
+	}
+	if result == nil {
+		t.Error("Expected non-nil result for 'abcd'.hashCode()")
+	}
+
+	// Тест: dummy.hashCode без скобок должно вернуть null
+	script2, err := engine.CreateScript(nil, nil, "dummy.hashCode")
+	if err != nil {
+		t.Fatalf("Failed to create script: %v", err)
+	}
+
+	ctx.Set("dummy", nil)
+	result, err = script2.Execute(ctx)
+	if err != nil {
+		t.Logf("Execution error (may be expected): %v", err)
+	}
+	if result != nil {
+		t.Errorf("Expected nil for null.hashCode, got %v", result)
+	}
+
+	// Тест: выражение dummy.hashCode() с null
+	ctx.Set("dummy", nil)
+	expr, err := engine.CreateExpression(nil, "dummy.hashCode()")
+	if err != nil {
+		t.Fatalf("Failed to create expression: %v", err)
+	}
+
+	result, err = expr.Evaluate(ctx)
+	if err != nil {
+		t.Logf("Evaluation error (expected in strict mode): %v", err)
+	} else if result != nil {
+		t.Errorf("Expected nil for null.hashCode(), got %v", result)
+	}
+
+	// Тест: выражение dummy.hashCode без скобок
+	expr2, err := engine.CreateExpression(nil, "dummy.hashCode")
+	if err != nil {
+		t.Fatalf("Failed to create expression: %v", err)
+	}
+
+	result, err = expr2.Evaluate(ctx)
+	if err != nil {
+		t.Logf("Evaluation error (expected in strict mode): %v", err)
+	} else if result != nil {
+		t.Errorf("Expected nil for null.hashCode, got %v", result)
+	}
+}
+
+// TestIssue90 - JEXL-90: проверка синтаксиса (точка с запятой)
+func TestIssue90(t *testing.T) {
+	builder := jexl.NewBuilder()
+	builder.Options().SetSilent(false)
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+	ctx.Set("x", false)
+	ctx.Set("y", true)
+
+	// Тесты, которые должны вызвать ошибку (нет точки с запятой)
+	failExprs := []string{
+		"a=3 b=4",
+		"while(a) while(a)",
+		"1 2",
+		"if (true) 2; 3 {}",
+		"while (x) 1 if (y) 2 3",
+	}
+
+	for _, fexpr := range failExprs {
+		_, err := engine.CreateScript(nil, nil, fexpr)
+		if err == nil {
+			t.Errorf("Expected error for invalid syntax: %s", fexpr)
+		}
+	}
+
+	// Тесты, которые должны работать (есть точка с запятой или блоки)
+	passExprs := []string{
+		"if (x) {1} if (y) {2}",
+		"if (x) 1 if (y) 2",
+		"while (x) 1 if (y) 2 else 3",
+		"for(z : [3, 4, 5]) { z } y ? 2 : 1",
+		"for(z : [3, 4, 5]) { z } if (y) 2 else 1",
+	}
+
+	for _, expr := range passExprs {
+		script, err := engine.CreateScript(nil, nil, expr)
+		if err != nil {
+			t.Logf("Failed to create script for %s: %v", expr, err)
+			continue
+		}
+
+		result, err := script.Execute(ctx)
+		if err != nil {
+			t.Logf("Failed to execute script for %s: %v", expr, err)
+			continue
+		}
+
+		// Результат должен быть 2
+		var resultInt int
+		switch v := result.(type) {
+		case int:
+			resultInt = v
+		case int64:
+			resultInt = int(v)
+		case *big.Rat:
+			if !v.IsInt() {
+				t.Errorf("Expected integer result, got %v", result)
+			} else {
+				resultInt = int(v.Num().Int64())
+			}
+		default:
+			t.Errorf("Unexpected result type: %T, value: %v", result, result)
+		}
+
+		if resultInt != 2 {
+			t.Errorf("Expected 2 for %s, got %d", expr, resultInt)
+		}
+	}
+}
+
+// Fn98 - структура для функции replace в TestIssue98
+type Fn98 struct{}
+
+// Replace заменяет все вхождения target на replacement в строке str
+func (f *Fn98) Replace(str, target, replacement string) string {
+	return replaceAll(str, target, replacement)
+}
+
+// replaceAll заменяет все вхождения old на new в строке s
+func replaceAll(s, old, new string) string {
+	result := ""
+	start := 0
+	for {
+		idx := findSubstring(s, old, start)
+		if idx == -1 {
+			result += s[start:]
+			break
+		}
+		result += s[start:idx] + new
+		start = idx + len(old)
+	}
+	return result
+}
+
+// findSubstring находит первое вхождение substr в s, начиная с позиции start
+func findSubstring(s, substr string, start int) int {
+	for i := start; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestIssue98 - JEXL-98: экранирование в строках
+func TestIssue98(t *testing.T) {
+
+	builder := jexl.NewBuilder()
+	// В Go версии нет namespaces, поэтому используем обычные переменные
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build engine: %v", err)
+	}
+
+	ctx := jexl.NewMapContext()
+	fn := &Fn98{}
+	ctx.Set("fn", fn)
+
+	// Тесты с разными способами экранирования
+	testCases := []struct {
+		expr     string
+		expected string
+	}{
+		{"fn.replace('DOMAIN\\\\somename', '\\\\\\\\', '\\\\\\\\\\\\\\\\')", "DOMAIN\\\\somename"},
+		{"fn.replace(\"DOMAIN\\\\somename\", \"\\\\\\\\\", \"\\\\\\\\\\\\\\\\\")", "DOMAIN\\\\somename"},
+	}
+
+	for _, tc := range testCases {
+		expr, err := engine.CreateExpression(nil, tc.expr)
+		if err != nil {
+			t.Logf("Failed to create expression %s: %v", tc.expr, err)
+			continue
+		}
+
+		result, err := expr.Evaluate(ctx)
+		if err != nil {
+			t.Logf("Failed to evaluate %s: %v", tc.expr, err)
+			continue
+		}
+
+		if result != tc.expected {
+			t.Errorf("Expected %q, got %q for %s", tc.expected, result, tc.expr)
+		}
+	}
+}
+

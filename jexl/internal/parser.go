@@ -122,7 +122,25 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 		return nil, err
 	}
 
-	ast.SetParameters(names)
+	// Устанавливаем параметры скрипта, если они указаны
+	if len(names) > 0 {
+		ast.SetParameters(names)
+	} else {
+		// Если параметры не указаны, проверяем, является ли скрипт только lambda
+		// Если да, устанавливаем параметры lambda в ScriptNode
+		children := ast.Children()
+		if len(children) == 1 {
+			if lambdaNode, ok := children[0].(*jexl.LambdaNode); ok {
+				// Скрипт содержит только lambda - устанавливаем параметры lambda
+				params := make([]string, 0, len(lambdaNode.Parameters()))
+				for _, param := range lambdaNode.Parameters() {
+					params = append(params, param.Name())
+				}
+				ast.SetParameters(params)
+			}
+		}
+	}
+
 	return ast, nil
 }
 
@@ -309,8 +327,9 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 		// Восстанавливаем позицию
 		p.pos = savedPos
 		if isLambda {
-			// Это lambda функция - ( уже прочитан, парсим параметры
-			lambda, err := p.parseLambda()
+			// Это lambda функция - ( уже прочитан в tok, парсим параметры
+			// parseLambda должен знать, что ( уже прочитан
+			lambda, err := p.parseLambda(true) // true = ( уже прочитан
 			if err != nil {
 				return nil, err
 			}
@@ -654,8 +673,8 @@ func (p *simpleParser) parseMapOrSetLiteral() (jexl.Node, error) {
 }
 
 // parseLambda парсит lambda функцию: (x, y) -> x + y или x -> x + 1 или (x, y) => x + y
-// Если вызывается из parseExpression после чтения (, то ( уже прочитан
-func (p *simpleParser) parseLambda() (jexl.Node, error) {
+// lparenRead указывает, был ли уже прочитан токен ( (true) или нет (false)
+func (p *simpleParser) parseLambda(lparenRead bool) (jexl.Node, error) {
 	// Проверяем, включена ли поддержка lambda
 	if p.features != nil && !p.features.SupportsLambda() {
 		return nil, p.errorf("lambda functions are not enabled")
@@ -666,55 +685,59 @@ func (p *simpleParser) parseLambda() (jexl.Node, error) {
 
 	// Парсим параметры
 	// Проверяем, является ли текущий токен ( или идентификатор
-	// Если это идентификатор, то ( уже прочитан в parseExpression
-	if p.peek().typ == tokenLParen {
+	if !lparenRead && p.peek().typ == tokenLParen {
 		// Множественные параметры в скобках: (x, y) - ( еще не прочитан
 		p.next() // consume '('
 		sourceStart = "("
 	} else if p.peek().typ == tokenIdent {
-		// Множественные параметры в скобках: (x, y) - ( уже прочитан в parseExpression
-		// или один параметр без скобок: x
-		// Проверяем, есть ли запятая после идентификатора - если да, то это множественные параметры
-		savedPos := p.pos
-		p.pos++
-		hasComma := p.pos < len(p.tokens) && p.tokens[p.pos].typ == tokenComma
-		p.pos = savedPos
-		
-		if hasComma {
-			// Множественные параметры в скобках: (x, y) - ( уже прочитан
+		// Один параметр без скобок: x -> ...
+		// Или параметры в скобках: (x) -> ... или (x, y) -> ...
+		if lparenRead {
+			// ( уже прочитан, начинаем с идентификатора
 			sourceStart = "("
 		} else {
-			// Один параметр без скобок: x
-			paramTok := p.next()
-			param := jexl.NewIdentifierNode(paramTok.literal, paramTok.literal)
-			parameters = append(parameters, param)
-			sourceStart = paramTok.literal
+			// Проверяем, есть ли запятая после идентификатора - если да, то это множественные параметры
+			savedPos := p.pos
+			p.pos++
+			hasComma := p.pos < len(p.tokens) && p.tokens[p.pos].typ == tokenComma
+			p.pos = savedPos
 			
-			// Парсим стрелку и тело
-			var arrow string
-			if p.peek().typ == tokenLambda {
-				p.next() // consume '->'
-				arrow = "->"
-			} else if p.peek().typ == tokenFatArrow {
-				p.next() // consume '=>'
-				arrow = "=>"
+			if hasComma {
+				// Множественные параметры в скобках: (x, y) - но ( еще не прочитан, это ошибка
+				return nil, p.errorf("expected '(' before lambda parameters")
 			} else {
-				return nil, p.errorf("expected '->' or '=>' in lambda")
+				// Один параметр без скобок: x -> ...
+				paramTok := p.next()
+				param := jexl.NewIdentifierNode(paramTok.literal, paramTok.literal)
+				parameters = append(parameters, param)
+				sourceStart = paramTok.literal
+				
+				// Парсим стрелку и тело
+				var arrow string
+				if p.peek().typ == tokenLambda {
+					p.next() // consume '->'
+					arrow = "->"
+				} else if p.peek().typ == tokenFatArrow {
+					p.next() // consume '=>'
+					arrow = "=>"
+				} else {
+					return nil, p.errorf("expected '->' or '=>' in lambda")
+				}
+				
+				var body jexl.Node
+				var err error
+				if p.peek().typ == tokenLBrace {
+					body, err = p.parseBlock()
+				} else {
+					body, err = p.parseExpression(0)
+				}
+				if err != nil {
+					return nil, err
+				}
+				
+				source := sourceStart + " " + arrow + " " + body.SourceText()
+				return jexl.NewLambdaNode(parameters, body, source), nil
 			}
-			
-			var body jexl.Node
-			var err error
-			if p.peek().typ == tokenLBrace {
-				body, err = p.parseBlock()
-			} else {
-				body, err = p.parseExpression(0)
-			}
-			if err != nil {
-				return nil, err
-			}
-			
-			source := sourceStart + " " + arrow + " " + body.SourceText()
-			return jexl.NewLambdaNode(parameters, body, source), nil
 		}
 	} else {
 		return nil, p.errorf("expected lambda parameters")
@@ -1162,19 +1185,9 @@ func (p *simpleParser) parseBlock() (jexl.Node, error) {
 		return jexl.NewBlockNode(nil, "{}"), nil
 	}
 	
-	// Специальная обработка: если после { сразу идет выражение, которое может быть литералом множества или мапы
-	// Проверяем, не является ли это литералом множества или мапы
-	savedPos := p.pos
-	mapOrSet, err := p.parseMapOrSetLiteral()
-	if err == nil && mapOrSet != nil {
-		// Проверяем, что после литерала идет конец блока или EOF
-		if p.peek().typ == tokenRBrace || p.peek().typ == tokenEOF {
-			// Это литерал множества или мапы, возвращаем его
-			return mapOrSet, nil
-		}
-	}
-	// Восстанавливаем позицию и парсим как обычный блок
-	p.pos = savedPos
+	// НЕ пытаемся парсить блок как литерал множества/мапы
+	// Блоки всегда должны парситься как BlockNode, даже если они содержат только одно выражение
+	// Это важно для lambda функций: (x) -> { x + 1 } должно быть блоком, а не множеством
 	
 	var statements []jexl.Node
 
