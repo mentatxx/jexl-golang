@@ -1,6 +1,7 @@
 package jexl_test
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/mentatxx/jexl-golang/jexl"
@@ -143,8 +144,25 @@ func TestNestedPropertyAssignment(t *testing.T) {
 		t.Fatalf("Failed to evaluate: %v", err)
 	}
 
-	if result != 10 {
-		t.Errorf("Expected 10, got %v", result)
+	// Результат может быть *big.Rat или int, проверяем значение
+	var resultInt int
+	switch v := result.(type) {
+	case int:
+		resultInt = v
+	case int64:
+		resultInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", result)
+		} else {
+			resultInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected result type: %T, value: %v", result, result)
+	}
+
+	if resultInt != 10 {
+		t.Errorf("Expected 10, got %d", resultInt)
 	}
 
 	if quux.Froboz.Value != 10 {
@@ -174,12 +192,46 @@ func TestArrayAssignment(t *testing.T) {
 		t.Fatalf("Failed to evaluate: %v", err)
 	}
 
-	if result != 1010 {
-		t.Errorf("Expected 1010, got %v", result)
+	// Результат может быть *big.Rat или int, проверяем значение
+	var resultInt int
+	switch v := result.(type) {
+	case int:
+		resultInt = v
+	case int64:
+		resultInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", result)
+		} else {
+			resultInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected result type: %T, value: %v", result, result)
 	}
 
-	if array[1] != 1010 {
-		t.Errorf("Expected array[1] to be 1010, got %v", array[1])
+	if resultInt != 1010 {
+		t.Errorf("Expected 1010, got %d", resultInt)
+	}
+
+	// Проверяем значение в массиве
+	var arrayVal int
+	switch v := array[1].(type) {
+	case int:
+		arrayVal = v
+	case int64:
+		arrayVal = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer in array, got %v", array[1])
+		} else {
+			arrayVal = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected array value type: %T, value: %v", array[1], array[1])
+	}
+
+	if arrayVal != 1010 {
+		t.Errorf("Expected array[1] to be 1010, got %d", arrayVal)
 	}
 }
 

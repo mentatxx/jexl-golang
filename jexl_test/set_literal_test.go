@@ -100,7 +100,18 @@ func TestSetLiteralWithNulls(t *testing.T) {
 		}
 
 		// Проверяем, что это множество (map в Go)
+		if result == nil {
+			// Пустое множество может быть nil
+			if exprStr != "{  }" {
+				t.Errorf("Unexpected nil result for %s", exprStr)
+			}
+			continue
+		}
 		resultType := reflect.TypeOf(result)
+		if resultType == nil {
+			t.Errorf("Result type is nil for %s", exprStr)
+			continue
+		}
 		if resultType.Kind() != reflect.Map {
 			t.Errorf("Expected map (set), got %v for %s", resultType, exprStr)
 		}

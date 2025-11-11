@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"math/big"
 	"reflect"
 
 	"github.com/mentatxx/jexl-golang/jexl"
@@ -50,6 +51,8 @@ func (i *interpreter) interpret(node jexl.Node) (any, error) {
 		return i.interpretTernary(n)
 	case *jexl.ElvisNode:
 		return i.interpretElvis(n)
+	case *jexl.RangeNode:
+		return i.interpretRange(n)
 	case *jexl.ArrayLiteralNode:
 		return i.interpretArrayLiteral(n)
 	case *jexl.MapLiteralNode:
@@ -350,28 +353,15 @@ func (i *interpreter) interpretIndexAccess(node *jexl.IndexAccessNode) (any, err
 		return nil, err
 	}
 
-	// Поддержка массивов и слайсов
-	switch v := obj.(type) {
-	case []any:
-		idx, ok := index.(int)
-		if !ok {
-			if idx64, ok := index.(int64); ok {
-				idx = int(idx64)
-			} else {
-				return nil, jexl.NewError("array index must be integer")
-			}
-		}
-		if idx < 0 || idx >= len(v) {
-			return nil, jexl.NewError("array index out of bounds")
-		}
-		return v[idx], nil
-	case map[string]any:
+	// Сначала проверяем, является ли объект мапой
+	// Для мап индекс может быть строкой или числом (преобразуется в строку)
+	if m, ok := obj.(map[string]any); ok {
 		key, ok := index.(string)
 		if !ok {
 			// Преобразуем ключ в строку
 			key = fmt.Sprintf("%v", index)
 		}
-		val, ok := v[key]
+		val, ok := m[key]
 		if !ok {
 			if i.options != nil && i.options.Strict() {
 				return nil, jexl.NewError("map key not found: " + key)
@@ -379,7 +369,104 @@ func (i *interpreter) interpretIndexAccess(node *jexl.IndexAccessNode) (any, err
 			return nil, nil
 		}
 		return val, nil
+	}
+
+	// Используем reflection для проверки других типов мап
+	val := reflect.ValueOf(obj)
+	if val.Kind() == reflect.Map {
+		keyType := val.Type().Key()
+		
+		// Специальная обработка для map[interface{}]interface{}
+		if keyType.Kind() == reflect.Interface {
+			// Для interface{} ключей нужно найти ключ по значению
+			// Пробуем найти ключ, сравнивая значения
+			for _, mapKey := range val.MapKeys() {
+				mapKeyVal := mapKey.Interface()
+				// Сравниваем значения через арифметику
+				if arith := i.engine.Arithmetic(); arith != nil {
+					cmp, err := arith.Compare(mapKeyVal, index)
+					if err == nil && cmp == 0 {
+						return val.MapIndex(mapKey).Interface(), nil
+					}
+				} else {
+					// Простое сравнение
+					if mapKeyVal == index {
+						return val.MapIndex(mapKey).Interface(), nil
+					}
+				}
+			}
+			// Если не нашли, пробуем преобразовать индекс и поискать снова
+			keyVal := reflect.ValueOf(index)
+			mapVal := val.MapIndex(keyVal)
+			if mapVal.IsValid() {
+				return mapVal.Interface(), nil
+			}
+			// Если все еще не нашли, пробуем преобразовать индекс в разные типы
+			if intIdx, err := toIntIndex(index); err == nil {
+				// Пробуем как int
+				if mapVal = val.MapIndex(reflect.ValueOf(intIdx)); mapVal.IsValid() {
+					return mapVal.Interface(), nil
+				}
+				// Пробуем как int64
+				if mapVal = val.MapIndex(reflect.ValueOf(int64(intIdx))); mapVal.IsValid() {
+					return mapVal.Interface(), nil
+				}
+			}
+			// Пробуем как строку
+			keyStr := fmt.Sprintf("%v", index)
+			if mapVal = val.MapIndex(reflect.ValueOf(keyStr)); mapVal.IsValid() {
+				return mapVal.Interface(), nil
+			}
+			if i.options != nil && i.options.Strict() {
+				return nil, jexl.NewError("map key not found")
+			}
+			return nil, nil
+		}
+		
+		keyVal := reflect.ValueOf(index)
+		if !keyVal.Type().AssignableTo(keyType) {
+			if keyVal.Type().ConvertibleTo(keyType) {
+				keyVal = keyVal.Convert(keyType)
+			} else if keyType.Kind() == reflect.String {
+				// Преобразуем ключ в строку
+				keyStr := fmt.Sprintf("%v", index)
+				keyVal = reflect.ValueOf(keyStr)
+			} else {
+				return nil, jexl.NewError("map key type mismatch")
+			}
+		}
+		mapVal := val.MapIndex(keyVal)
+		if !mapVal.IsValid() {
+			if i.options != nil && i.options.Strict() {
+				return nil, jexl.NewError("map key not found")
+			}
+			return nil, nil
+		}
+		return mapVal.Interface(), nil
+	}
+
+	// Преобразуем индекс в int для массивов и слайсов
+	intIndex, err := toIntIndex(index)
+	if err != nil {
+		return nil, jexl.NewError("array index must be integer")
+	}
+
+	// Поддержка массивов и слайсов
+	switch v := obj.(type) {
+	case []any:
+		if intIndex < 0 || intIndex >= len(v) {
+			return nil, jexl.NewError("array index out of bounds")
+		}
+		return v[intIndex], nil
 	default:
+		// Используем reflection для других типов слайсов и массивов
+		if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
+			if intIndex < 0 || intIndex >= val.Len() {
+				return nil, jexl.NewError("array index out of bounds")
+			}
+			return val.Index(intIndex).Interface(), nil
+		}
+		
 		// Попытка использовать reflection через Uberspect
 		uberspect := i.engine.Uberspect()
 		if uberspect != nil {
@@ -682,12 +769,18 @@ func (i *interpreter) assignMapIndex(mapValue reflect.Value, index any, value an
 	}
 	
 	keyVal := reflect.ValueOf(index)
-	if !keyVal.Type().AssignableTo(mapValue.Type().Key()) {
-		if keyVal.Type().ConvertibleTo(mapValue.Type().Key()) {
-			keyVal = keyVal.Convert(mapValue.Type().Key())
+	keyType := mapValue.Type().Key()
+	
+	// Специальная обработка для map[interface{}]interface{}
+	if keyType.Kind() == reflect.Interface {
+		// Для interface{} ключей можем использовать любой тип
+		keyVal = reflect.ValueOf(index)
+	} else if !keyVal.Type().AssignableTo(keyType) {
+		if keyVal.Type().ConvertibleTo(keyType) {
+			keyVal = keyVal.Convert(keyType)
 		} else {
 			// Для map[string]any пробуем преобразовать ключ в строку
-			if mapValue.Type().Key().Kind() == reflect.String {
+			if keyType.Kind() == reflect.String {
 				keyStr := fmt.Sprintf("%v", index)
 				keyVal = reflect.ValueOf(keyStr)
 			} else {
@@ -697,14 +790,15 @@ func (i *interpreter) assignMapIndex(mapValue reflect.Value, index any, value an
 	}
 
 	valVal := reflect.ValueOf(value)
+	elemType := mapValue.Type().Elem()
 	if !valVal.IsValid() {
-		valVal = reflect.Zero(mapValue.Type().Elem())
-	} else if !valVal.Type().AssignableTo(mapValue.Type().Elem()) {
-		if valVal.Type().ConvertibleTo(mapValue.Type().Elem()) {
-			valVal = valVal.Convert(mapValue.Type().Elem())
-		} else if mapValue.Type().Elem().Kind() == reflect.Interface {
-			// Для map[string]any можем использовать любое значение
+		valVal = reflect.Zero(elemType)
+	} else if !valVal.Type().AssignableTo(elemType) {
+		if elemType.Kind() == reflect.Interface {
+			// Для interface{} значений можем использовать любое значение
 			valVal = reflect.ValueOf(value)
+		} else if valVal.Type().ConvertibleTo(elemType) {
+			valVal = valVal.Convert(elemType)
 		} else {
 			return nil, jexl.NewError("map value type mismatch")
 		}
@@ -767,6 +861,16 @@ func toIntIndex(index any) (int, error) {
 		return int(v), nil
 	case uint64:
 		return int(v), nil
+	case *big.Rat:
+		if !v.IsInt() {
+			return 0, jexl.NewError("index must be integer")
+		}
+		return int(v.Num().Int64()), nil
+	case *big.Int:
+		if !v.IsInt64() {
+			return 0, jexl.NewError("index must be integer")
+		}
+		return int(v.Int64()), nil
 	default:
 		return 0, jexl.NewError("index must be integer")
 	}
@@ -799,36 +903,54 @@ func (i *interpreter) interpretTernary(node *jexl.TernaryNode) (any, error) {
 }
 
 // interpretElvis выполняет Elvis оператор.
+// Elvis оператор (??) возвращает default только если expr == nil или undefined.
+// Если expr имеет значение (даже false, 0, пустая строка), возвращается expr.
 func (i *interpreter) interpretElvis(node *jexl.ElvisNode) (any, error) {
 	expr, err := i.interpret(node.Expr())
 	if err != nil {
+		// Если ошибка и это не строгий режим, возвращаем default
 		if i.options != nil && i.options.Safe() {
-			// В safe режиме возвращаем default
+			return i.interpret(node.DefaultExpr())
+		}
+		// В строгом режиме проверяем, является ли это ошибкой "variable not found"
+		if i.options == nil || !i.options.Strict() {
+			// В нестрогом режиме для ошибок переменных возвращаем default
 			return i.interpret(node.DefaultExpr())
 		}
 		return nil, err
 	}
 
+	// Elvis оператор возвращает default только если expr == nil
+	// Если expr имеет любое другое значение (включая false, 0, ""), возвращаем expr
 	if expr == nil {
 		return i.interpret(node.DefaultExpr())
 	}
 
+	// Возвращаем expr, даже если он false, 0, пустая строка и т.д.
+	return expr, nil
+}
+
+// interpretRange выполняет RangeNode.
+func (i *interpreter) interpretRange(node *jexl.RangeNode) (any, error) {
+	left, err := i.interpret(node.Left())
+	if err != nil {
+		return nil, err
+	}
+
+	right, err := i.interpret(node.Right())
+	if err != nil {
+		return nil, err
+	}
+
+	// Получаем арифметику из движка
 	arithmetic := i.engine.Arithmetic()
 	if arithmetic == nil {
+		// Используем базовую арифметику
 		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
 	}
 
-	test, err := arithmetic.ToBoolean(expr)
-	if err != nil {
-		// Если не удалось преобразовать в boolean, считаем что expr не пустой
-		return expr, nil
-	}
-
-	if !test {
-		return i.interpret(node.DefaultExpr())
-	}
-
-	return expr, nil
+	// Создаём range через арифметику
+	return arithmetic.CreateRange(left, right)
 }
 
 // interpretArrayLiteral выполняет литерал массива.

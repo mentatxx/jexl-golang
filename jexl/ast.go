@@ -486,6 +486,47 @@ func (t *TernaryNode) FalseExpr() Node {
 	return t.falseExpr
 }
 
+// RangeNode представляет range оператор (left .. right).
+type RangeNode struct {
+	left   Node
+	right  Node
+	source string
+}
+
+// NewRangeNode создаёт новый RangeNode.
+func NewRangeNode(left, right Node, source string) *RangeNode {
+	return &RangeNode{
+		left:   left,
+		right:  right,
+		source: source,
+	}
+}
+
+// Children возвращает дочерние узлы.
+func (r *RangeNode) Children() []Node {
+	return []Node{r.left, r.right}
+}
+
+// String возвращает строковое представление.
+func (r *RangeNode) String() string {
+	return r.source
+}
+
+// SourceText возвращает исходный текст.
+func (r *RangeNode) SourceText() string {
+	return r.source
+}
+
+// Left возвращает левый операнд.
+func (r *RangeNode) Left() Node {
+	return r.left
+}
+
+// Right возвращает правый операнд.
+func (r *RangeNode) Right() Node {
+	return r.right
+}
+
 // ElvisNode представляет Elvis оператор (expr ?: defaultExpr).
 type ElvisNode struct {
 	expr        Node

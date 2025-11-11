@@ -3,6 +3,7 @@ package internal
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/mentatxx/jexl-golang/jexl"
@@ -114,6 +115,18 @@ func (u *uberspectImpl) GetProperty(obj any, identifier string) jexl.PropertyGet
 		}
 	}
 
+	// Для массивов и слайсов: поддержка точечной нотации для индексов (foo.0 -> foo[0])
+	if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
+		// Пробуем преобразовать identifier в число
+		if index, err := strconv.Atoi(identifier); err == nil {
+			if index >= 0 && index < val.Len() {
+				return &slicePropertyGet{sliceVal: val, index: index}
+			}
+		}
+		// Если не число, возвращаем nil (не поддерживаем другие свойства для слайсов)
+		return nil
+	}
+
 	// Для указателей, разыменовываем
 	if val.Kind() == reflect.Ptr {
 		if val.IsNil() {
@@ -122,9 +135,15 @@ func (u *uberspectImpl) GetProperty(obj any, identifier string) jexl.PropertyGet
 		val = val.Elem()
 	}
 
-	// Пробуем поле
-	if field := val.FieldByName(identifier); field.IsValid() && field.CanInterface() {
-		return &fieldPropertyGet{field: field}
+	// Не пытаемся получить поле для slice, array, map, channel, func, interface
+	// Эти типы не имеют полей
+	if val.Kind() != reflect.Slice && val.Kind() != reflect.Array &&
+		val.Kind() != reflect.Map && val.Kind() != reflect.Chan &&
+		val.Kind() != reflect.Func && val.Kind() != reflect.Interface {
+		// Пробуем поле
+		if field := val.FieldByName(identifier); field.IsValid() && field.CanInterface() {
+			return &fieldPropertyGet{field: field}
+		}
 	}
 
 	// Пробуем метод Getter (GetXxx)
@@ -159,6 +178,18 @@ func (u *uberspectImpl) SetProperty(obj any, identifier string, value any) jexl.
 		}
 	}
 
+	// Для массивов и слайсов: поддержка точечной нотации для индексов (foo.0 -> foo[0])
+	if val.Kind() == reflect.Slice || val.Kind() == reflect.Array {
+		// Пробуем преобразовать identifier в число
+		if index, err := strconv.Atoi(identifier); err == nil {
+			if index >= 0 && index < val.Len() {
+				return &slicePropertySet{sliceVal: val, index: index, valueType: val.Type().Elem()}
+			}
+		}
+		// Если не число, возвращаем nil (не поддерживаем другие свойства для слайсов)
+		return nil
+	}
+
 	// Для указателей, разыменовываем
 	if val.Kind() == reflect.Ptr {
 		if val.IsNil() {
@@ -167,9 +198,15 @@ func (u *uberspectImpl) SetProperty(obj any, identifier string, value any) jexl.
 		val = val.Elem()
 	}
 
-	// Пробуем поле
-	if field := val.FieldByName(identifier); field.IsValid() && field.CanSet() {
-		return &fieldPropertySet{field: field, valueType: field.Type()}
+	// Не пытаемся получить поле для slice, array, map, channel, func, interface
+	// Эти типы не имеют полей
+	if val.Kind() != reflect.Slice && val.Kind() != reflect.Array &&
+		val.Kind() != reflect.Map && val.Kind() != reflect.Chan &&
+		val.Kind() != reflect.Func && val.Kind() != reflect.Interface {
+		// Пробуем поле
+		if field := val.FieldByName(identifier); field.IsValid() && field.CanSet() {
+			return &fieldPropertySet{field: field, valueType: field.Type()}
+		}
 	}
 
 	// Пробуем метод Setter (SetXxx)
@@ -444,6 +481,18 @@ func (m *mapPropertyGet) Invoke(obj any) (any, error) {
 	return result.Interface(), nil
 }
 
+type slicePropertyGet struct {
+	sliceVal reflect.Value
+	index    int
+}
+
+func (s *slicePropertyGet) Invoke(obj any) (any, error) {
+	if s.index < 0 || s.index >= s.sliceVal.Len() {
+		return nil, jexl.NewError("slice index out of bounds")
+	}
+	return s.sliceVal.Index(s.index).Interface(), nil
+}
+
 // Реализации PropertySet
 
 type fieldPropertySet struct {
@@ -524,6 +573,38 @@ func (m *mapPropertySet) Invoke(obj any, value any) error {
 	}
 
 	m.mapVal.SetMapIndex(m.key, val)
+	return nil
+}
+
+type slicePropertySet struct {
+	sliceVal  reflect.Value
+	index     int
+	valueType reflect.Type
+}
+
+func (s *slicePropertySet) Invoke(obj any, value any) error {
+	if s.index < 0 || s.index >= s.sliceVal.Len() {
+		return jexl.NewError("slice index out of bounds")
+	}
+
+	val := reflect.ValueOf(value)
+	if !val.IsValid() {
+		val = reflect.Zero(s.valueType)
+	}
+
+	elem := s.sliceVal.Index(s.index)
+	if !val.Type().AssignableTo(elem.Type()) {
+		if val.Type().ConvertibleTo(elem.Type()) {
+			val = val.Convert(elem.Type())
+		} else if elem.Type().Kind() == reflect.Interface {
+			// Для []any можем использовать любое значение
+			val = reflect.ValueOf(value)
+		} else {
+			return jexl.NewError(fmt.Sprintf("cannot assign %s to %s", val.Type(), elem.Type()))
+		}
+	}
+
+	elem.Set(val)
 	return nil
 }
 

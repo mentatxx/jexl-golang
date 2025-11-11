@@ -231,6 +231,27 @@
 - ⚠️ Тесты с side-effect операторами (+=, -=, и т.д.) - требуют реализации
 - ⚠️ Тесты с инкрементом/декрементом (++, --) - требуют реализации
 
+#### Тесты из ArithmeticOperatorTest.java (arithmetic_operator_test.go)
+- ✅ `TestRangeOperator` - тесты для range оператора (..) - подготовлены, требуют реализации
+- ✅ `TestStringStartsWithEndsWithComprehensive` - расширенные тесты для =^ и =$
+- ✅ `TestStringNotStartsEndsWithComprehensive` - расширенные тесты для !^ и !$
+- ✅ `TestMatchOperatorComprehensive` - расширенные тесты для =~ и !~
+- ✅ `TestIncrementDecrementOnNull` - тесты инкремента/декремента на null - подготовлены, требуют реализации
+- ✅ `TestMatchWithCollections` - тесты оператора =~ с коллекциями
+- ✅ `Test391` - тесты оператора =~ с массивами и списками
+
+#### Тесты из FeaturesTest.java (features_test.go)
+- ✅ `TestFeaturesCreateNone` - создание Features с минимальными возможностями
+- ✅ `TestFeaturesCreateDefault` - создание Features с дефолтными настройками
+- ✅ `TestFeaturesNoLoops` - отключение циклов
+- ✅ `TestFeaturesNoLocalVar` - отключение локальных переменных
+- ✅ `TestFeaturesNoLambda` - отключение lambda функций
+- ✅ `TestFeaturesNoMethodCall` - отключение вызовов методов
+- ✅ `TestFeaturesNoNewInstance` - отключение создания экземпляров
+- ✅ `TestFeaturesNoStructuredLiteral` - отключение структурированных литералов
+- ✅ `TestFeaturesNoScript` - отключение скриптов
+- ✅ `TestFeaturesMixedFeatures` - смешанные настройки features
+
 ### ❌ Не портировано (требует реализации функциональности)
 
 #### Тесты, которые не могут быть портированы без реализации функций:
@@ -240,12 +261,8 @@
 - ❌ Annotation обработка (`AnnotationTest.java`)
 - ❌ Pragma директивы (`PragmaTest.java`)
 - ❌ Namespace (`ContextNamespaceTest.java`)
-- ❌ Битовые операторы (`BitwiseOperatorTest.java`, `ShiftOperatorsTest.java`)
-- ❌ Строковые операторы (contains, startsWith, endsWith)
-- ❌ Side-effect операторы
-- ❌ Инкремент/декремент
+- ❌ Range операторы (..) - тесты подготовлены, требуют реализации
 - ❌ Lexical scope (`LexicalTest.java`)
-- ❌ Features (`FeaturesTest.java`)
 - ❌ Permissions (`ComposePermissionsTest.java`)
 - ❌ Sandbox (`SandboxTest.java`)
 - ❌ Cache (`CacheTest.java`)
@@ -266,9 +283,10 @@
 8. И множество других специализированных тестов
 
 ### Go тесты (портировано):
-- **Всего тестов**: ~200+ тестов
+- **Всего тестов**: ~250+ тестов
 - **Покрытие базовой функциональности**: ~96%
-- **Покрытие продвинутой функциональности**: ~75%
+- **Покрытие продвинутой функциональности**: ~80%
+- **Новые тесты**: добавлены тесты из ArithmeticOperatorTest.java и FeaturesTest.java
 
 ## План дальнейшего портирования тестов
 

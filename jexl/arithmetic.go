@@ -33,6 +33,8 @@ type Arithmetic interface {
 	Contains(a, b any) (any, error)
 	StartsWith(a, b any) (any, error)
 	EndsWith(a, b any) (any, error)
+	// Range операция
+	CreateRange(left, right any) (any, error)
 }
 
 // BaseArithmetic предоставляет простую реализацию с ограниченным функционалом.
@@ -535,6 +537,97 @@ func (a *BaseArithmetic) EndsWith(lhs, rhs any) (any, error) {
 	ls := fmt.Sprintf("%v", lhs)
 	rs := fmt.Sprintf("%v", rhs)
 	return strings.HasSuffix(ls, rs), nil
+}
+
+// CreateRange создаёт range от left до right включительно.
+// Возвращает слайс чисел от left до right.
+func (a *BaseArithmetic) CreateRange(left, right any) (any, error) {
+	// Преобразуем left и right в числа
+	leftNum, err := a.toInteger(left)
+	if err != nil {
+		return nil, NewError("range left operand must be a number")
+	}
+	rightNum, err := a.toInteger(right)
+	if err != nil {
+		return nil, NewError("range right operand must be a number")
+	}
+
+	// Создаём range
+	var result []int64
+	if leftNum <= rightNum {
+		// Возрастающий range
+		for i := leftNum; i <= rightNum; i++ {
+			result = append(result, i)
+		}
+	} else {
+		// Убывающий range
+		for i := leftNum; i >= rightNum; i-- {
+			result = append(result, i)
+		}
+	}
+
+	return result, nil
+}
+
+// toInteger преобразует значение в int64.
+func (a *BaseArithmetic) toInteger(value any) (int64, error) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), nil
+	case int8:
+		return int64(v), nil
+	case int16:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case uint:
+		return int64(v), nil
+	case uint8:
+		return int64(v), nil
+	case uint16:
+		return int64(v), nil
+	case uint32:
+		return int64(v), nil
+	case uint64:
+		if v > uint64(^uint64(0)>>1) {
+			return 0, NewError("value too large for int64")
+		}
+		return int64(v), nil
+	case float32:
+		return int64(v), nil
+	case float64:
+		return int64(v), nil
+	case *big.Rat:
+		if !v.IsInt() {
+			return 0, NewError("cannot convert non-integer to int64")
+		}
+		return v.Num().Int64(), nil
+	case *big.Int:
+		if !v.IsInt64() {
+			return 0, NewError("value too large for int64")
+		}
+		return v.Int64(), nil
+	case string:
+		// Пробуем распарсить как число
+		if r, ok := new(big.Rat).SetString(v); ok {
+			if !r.IsInt() {
+				return 0, NewError("cannot convert non-integer string to int64")
+			}
+			return r.Num().Int64(), nil
+		}
+		return 0, NewError("cannot convert string to int64")
+	default:
+		// Пробуем использовать toBig для преобразования
+		if rat, ok := toBig(value); ok {
+			if !rat.IsInt() {
+				return 0, NewError("cannot convert non-integer to int64")
+			}
+			return rat.Num().Int64(), nil
+		}
+		return 0, NewError("cannot convert value to int64")
+	}
 }
 
 // equals сравнивает два значения на равенство.

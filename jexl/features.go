@@ -111,3 +111,110 @@ func FeaturesDefault() *Features {
 	)
 	return f
 }
+
+// With включает указанные features и возвращает новый объект.
+func (f *Features) With(features ...Feature) *Features {
+	if f == nil {
+		f = &Features{}
+	}
+	result := &Features{
+		flags:        f.flags,
+		reserved:     slices.Clone(f.reserved),
+		namespaceSet: slices.Clone(f.namespaceSet),
+	}
+	for _, feat := range features {
+		result.Enable(feat, true)
+	}
+	return result
+}
+
+// Without выключает указанные features и возвращает новый объект.
+func (f *Features) Without(features ...Feature) *Features {
+	if f == nil {
+		f = &Features{}
+	}
+	result := &Features{
+		flags:        f.flags,
+		reserved:     slices.Clone(f.reserved),
+		namespaceSet: slices.Clone(f.namespaceSet),
+	}
+	for _, feat := range features {
+		result.Enable(feat, false)
+	}
+	return result
+}
+
+// SupportsExpression проверяет поддержку выражений (всегда true).
+func (f *Features) SupportsExpression() bool {
+	return true // Выражения всегда поддерживаются
+}
+
+// SupportsScript проверяет поддержку скриптов.
+func (f *Features) SupportsScript() bool {
+	return f.Enabled(FeatureScript)
+}
+
+// SupportsLoops проверяет поддержку циклов.
+func (f *Features) SupportsLoops() bool {
+	return f.Enabled(FeatureLoop)
+}
+
+// SupportsLocalVar проверяет поддержку локальных переменных.
+func (f *Features) SupportsLocalVar() bool {
+	return f.Enabled(FeatureLocalVar)
+}
+
+// SupportsLambda проверяет поддержку lambda функций.
+func (f *Features) SupportsLambda() bool {
+	return f.Enabled(FeatureLambda)
+}
+
+// SupportsMethodCall проверяет поддержку вызовов методов.
+func (f *Features) SupportsMethodCall() bool {
+	return f.Enabled(FeatureMethodCall)
+}
+
+// SupportsNewInstance проверяет поддержку создания экземпляров.
+func (f *Features) SupportsNewInstance() bool {
+	return f.Enabled(FeatureNewInstance)
+}
+
+// SupportsStructuredLiteral проверяет поддержку структурированных литералов.
+func (f *Features) SupportsStructuredLiteral() bool {
+	return f.Enabled(FeatureStructuredLiteral)
+}
+
+// SupportsAnnotation проверяет поддержку аннотаций.
+func (f *Features) SupportsAnnotation() bool {
+	return f.Enabled(FeatureAnnotation)
+}
+
+// SupportsPragma проверяет поддержку pragma директив.
+func (f *Features) SupportsPragma() bool {
+	return f.Enabled(FeaturePragma)
+}
+
+// IsLexical проверяет включен ли lexical scope.
+func (f *Features) IsLexical() bool {
+	return f.Enabled(FeatureLexical)
+}
+
+// IsLexicalShade проверяет включен ли lexical shade.
+func (f *Features) IsLexicalShade() bool {
+	return f.Enabled(FeatureLexicalShade)
+}
+
+// SupportsConstCapture проверяет поддержку const capture.
+func (f *Features) SupportsConstCapture() bool {
+	return f.Enabled(FeatureConstCapture)
+}
+
+// SupportsComparatorNames проверяет поддержку именованных операторов сравнения (eq, ne, lt, и т.д.).
+func (f *Features) SupportsComparatorNames() bool {
+	return f.Enabled(FeatureComparatorNames)
+}
+
+// SupportsPragmaAnywhere проверяет поддержку pragma везде.
+func (f *Features) SupportsPragmaAnywhere() bool {
+	return f.Enabled(FeaturePragmaAnywhere)
+}

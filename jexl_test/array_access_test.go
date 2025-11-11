@@ -1,6 +1,7 @@
 package jexl_test
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/mentatxx/jexl-golang/jexl"
@@ -201,8 +202,25 @@ func TestArrayArray(t *testing.T) {
 		t.Fatalf("Failed to execute script: %v", err)
 	}
 
-	if result != 43 {
-		t.Errorf("Expected 43, got %v", result)
+	// Результат может быть *big.Rat или int, проверяем значение
+	var resultInt int
+	switch v := result.(type) {
+	case int:
+		resultInt = v
+	case int64:
+		resultInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", result)
+		} else {
+			resultInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected result type: %T, value: %v", result, result)
+	}
+
+	if resultInt != 43 {
+		t.Errorf("Expected 43, got %d", resultInt)
 	}
 
 	// Проверяем, что значение изменилось
@@ -216,8 +234,25 @@ func TestArrayArray(t *testing.T) {
 		t.Fatalf("Failed to evaluate expression: %v", err)
 	}
 
-	if result != 43 {
-		t.Errorf("Expected 43, got %v", result)
+	// Результат может быть *big.Rat или int, проверяем значение
+	resultInt = 0
+	switch v := result.(type) {
+	case int:
+		resultInt = v
+	case int64:
+		resultInt = int(v)
+	case *big.Rat:
+		if !v.IsInt() {
+			t.Errorf("Expected integer result, got %v", result)
+		} else {
+			resultInt = int(v.Num().Int64())
+		}
+	default:
+		t.Errorf("Unexpected result type: %T, value: %v", result, result)
+	}
+
+	if resultInt != 43 {
+		t.Errorf("Expected 43, got %d", resultInt)
 	}
 }
 

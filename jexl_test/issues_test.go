@@ -47,11 +47,43 @@ func TestIssue100(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to evaluate: %v", err)
 		}
-		if value != 43 {
-			t.Errorf("Expected 43, got %v", value)
+		// Результат может быть *big.Rat или int, проверяем значение
+		var valueInt int
+		switch v := value.(type) {
+		case int:
+			valueInt = v
+		case int64:
+			valueInt = int(v)
+		case *big.Rat:
+			if !v.IsInt() {
+				t.Errorf("Expected integer result, got %v", value)
+			} else {
+				valueInt = int(v.Num().Int64())
+			}
+		default:
+			t.Errorf("Unexpected result type: %T, value: %v", value, value)
 		}
-		if foo[0] != 43 {
-			t.Errorf("Expected foo[0] to be 43, got %v", foo[0])
+		if valueInt != 43 {
+			t.Errorf("Expected 43, got %d", valueInt)
+		}
+		// Проверяем значение в массиве
+		var arrayVal int
+		switch v := foo[0].(type) {
+		case int:
+			arrayVal = v
+		case int64:
+			arrayVal = int(v)
+		case *big.Rat:
+			if !v.IsInt() {
+				t.Errorf("Expected integer in array, got %v", foo[0])
+			} else {
+				arrayVal = int(v.Num().Int64())
+			}
+		default:
+			t.Errorf("Unexpected array value type: %T, value: %v", foo[0], foo[0])
+		}
+		if arrayVal != 43 {
+			t.Errorf("Expected foo[0] to be 43, got %d", arrayVal)
 		}
 
 		// foo.0 (точечная нотация для индекса)
@@ -63,8 +95,26 @@ func TestIssue100(t *testing.T) {
 			value, err = expr.Evaluate(ctx)
 			if err != nil {
 				t.Logf("Evaluation failed: %v", err)
-			} else if value != 43 {
-				t.Errorf("Expected 43, got %v", value)
+			} else {
+				// Результат может быть *big.Rat или int, проверяем значение
+				var valueInt int
+				switch v := value.(type) {
+				case int:
+					valueInt = v
+				case int64:
+					valueInt = int(v)
+				case *big.Rat:
+					if !v.IsInt() {
+						t.Errorf("Expected integer result, got %v", value)
+					} else {
+						valueInt = int(v.Num().Int64())
+					}
+				default:
+					t.Errorf("Unexpected result type: %T, value: %v", value, value)
+				}
+				if valueInt != 43 {
+					t.Errorf("Expected 43, got %d", valueInt)
+				}
 			}
 		}
 
@@ -76,8 +126,26 @@ func TestIssue100(t *testing.T) {
 			value, err = expr.Evaluate(ctx)
 			if err != nil {
 				t.Logf("Evaluation failed: %v", err)
-			} else if value != 42 {
-				t.Errorf("Expected 42, got %v", value)
+			} else {
+				// Результат может быть *big.Rat или int, проверяем значение
+				var valueInt int
+				switch v := value.(type) {
+				case int:
+					valueInt = v
+				case int64:
+					valueInt = int(v)
+				case *big.Rat:
+					if !v.IsInt() {
+						t.Errorf("Expected integer result, got %v", value)
+					} else {
+						valueInt = int(v.Num().Int64())
+					}
+				default:
+					t.Errorf("Unexpected result type: %T, value: %v", value, value)
+				}
+				if valueInt != 42 {
+					t.Errorf("Expected 42, got %d", valueInt)
+				}
 			}
 		}
 	}

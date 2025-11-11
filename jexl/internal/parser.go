@@ -222,15 +222,22 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 			continue
 		}
 
-		// Доступ к свойству: expr.prop
+		// Доступ к свойству: expr.prop или expr.1 (числовое свойство)
 		if next.typ == tokenDot {
 			p.next() // consume '.'
-			if p.peek().typ != tokenIdent {
-				return nil, p.errorf("expected identifier after '.'")
+			prop := p.peek()
+			var propName string
+			if prop.typ == tokenIdent {
+				prop = p.next()
+				propName = prop.literal
+			} else if prop.typ == tokenNumber {
+				prop = p.next()
+				propName = prop.literal
+			} else {
+				return nil, p.errorf("expected identifier or number after '.'")
 			}
-			prop := p.next()
-			propNode := jexl.NewIdentifierNode(prop.literal, prop.literal)
-			left = jexl.NewPropertyAccessNode(left, propNode, fmt.Sprintf("%s.%s", left.SourceText(), prop.literal))
+			propNode := jexl.NewIdentifierNode(propName, propName)
+			left = jexl.NewPropertyAccessNode(left, propNode, fmt.Sprintf("%s.%s", left.SourceText(), propName))
 			continue
 		}
 
@@ -326,6 +333,18 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 			}
 			source := fmt.Sprintf("%s ?? %s", left.SourceText(), defaultExpr.SourceText())
 			left = jexl.NewElvisNode(left, defaultExpr, source)
+			continue
+		}
+
+		// Range оператор: left .. right
+		if next.typ == tokenRange {
+			p.next() // consume '..'
+			right, err := p.parseExpression(infixPrecedence(tokenRange) + 1)
+			if err != nil {
+				return nil, err
+			}
+			source := fmt.Sprintf("%s .. %s", left.SourceText(), right.SourceText())
+			left = jexl.NewRangeNode(left, right, source)
 			continue
 		}
 
@@ -580,6 +599,12 @@ func (p *simpleParser) parseForStatement() (jexl.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		if items == nil {
+			return nil, p.errorf("expected expression after ':'")
+		}
+		if body == nil {
+			return nil, p.errorf("expected statement or block after ')'")
+		}
 		source := fmt.Sprintf("for (var %s : %s) %s", varName.literal, items.SourceText(), body.SourceText())
 		return jexl.NewForeachNode(jexl.NewIdentifierNode(varName.literal, varName.literal), items, body, source), nil
 	} else if peek.typ == tokenIdent {
@@ -591,12 +616,18 @@ func (p *simpleParser) parseForStatement() (jexl.Node, error) {
 			if err != nil {
 				return nil, err
 			}
+			if items == nil {
+				return nil, p.errorf("expected expression after ':'")
+			}
 			if err := p.expect(tokenRParen); err != nil {
 				return nil, err
 			}
 			body, err := p.parseStatementOrBlock()
 			if err != nil {
 				return nil, err
+			}
+			if body == nil {
+				return nil, p.errorf("expected statement or block after ')'")
 			}
 			source := fmt.Sprintf("for (%s : %s) %s", varName.literal, items.SourceText(), body.SourceText())
 			return jexl.NewForeachNode(jexl.NewIdentifierNode(varName.literal, varName.literal), items, body, source), nil
@@ -773,7 +804,15 @@ func (p *simpleParser) parseStatementOrBlock() (jexl.Node, error) {
 	if p.peek().typ == tokenLBrace {
 		return p.parseBlock()
 	}
-	return p.parseStatement()
+	node, err := p.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	if node != nil {
+		return node, nil
+	}
+	// Если не statement, пробуем парсить как выражение
+	return p.parseExpression(0)
 }
 
 // parseCall парсит вызов метода или функции.
@@ -944,6 +983,7 @@ const (
 	tokenNotContains    // !~
 	tokenNotStartsWith  // !^
 	tokenNotEndsWith    // !$
+	tokenRange          // ..
 	// Side-effect операторы
 	tokenPlusEqual      // +=
 	tokenMinusEqual     // -=
@@ -1054,6 +1094,9 @@ func (l *lexer) nextToken() token {
 	case '}':
 		return token{typ: tokenRBrace, literal: "}"}
 	case '.':
+		if l.match('.') {
+			return token{typ: tokenRange, literal: ".."}
+		}
 		return token{typ: tokenDot, literal: "."}
 	case ',':
 		return token{typ: tokenComma, literal: ","}
@@ -1326,6 +1369,8 @@ func infixPrecedence(tt tokenType) int {
 		return 9
 	case tokenEqualEqual, tokenBangEqual:
 		return 8
+	case tokenRange:
+		return 7 // Range имеет тот же приоритет, что и строковые операторы
 	case tokenContains, tokenStartsWith, tokenEndsWith, tokenNotContains, tokenNotStartsWith, tokenNotEndsWith:
 		return 7
 	case tokenAmpersand:
