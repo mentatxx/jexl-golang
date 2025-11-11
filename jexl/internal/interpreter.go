@@ -1,0 +1,1050 @@
+package internal
+
+import (
+	"fmt"
+	"reflect"
+
+	"github.com/mentatxx/jexl-golang/jexl"
+)
+
+// interpreter выполняет AST узлы.
+// Порт org.apache.commons.jexl3.internal.Interpreter.
+type interpreter struct {
+	engine  jexl.Engine
+	context jexl.Context
+	options *jexl.Options
+}
+
+// newInterpreter создаёт новый интерпретатор.
+func newInterpreter(engine jexl.Engine, ctx jexl.Context) *interpreter {
+	opts := engine.Options()
+	return &interpreter{
+		engine:  engine,
+		context: ctx,
+		options: opts,
+	}
+}
+
+// interpret выполняет AST узел.
+func (i *interpreter) interpret(node jexl.Node) (any, error) {
+	switch n := node.(type) {
+	case *jexl.ScriptNode:
+		return i.interpretScript(n)
+	case *jexl.LiteralNode:
+		return n.Value(), nil
+	case *jexl.IdentifierNode:
+		return i.interpretIdentifier(n)
+	case *jexl.BinaryOpNode:
+		return i.interpretBinaryOp(n)
+	case *jexl.UnaryOpNode:
+		return i.interpretUnaryOp(n)
+	case *jexl.PropertyAccessNode:
+		return i.interpretPropertyAccess(n)
+	case *jexl.IndexAccessNode:
+		return i.interpretIndexAccess(n)
+	case *jexl.MethodCallNode:
+		return i.interpretMethodCall(n)
+	case *jexl.AssignmentNode:
+		return i.interpretAssignment(n)
+	case *jexl.TernaryNode:
+		return i.interpretTernary(n)
+	case *jexl.ElvisNode:
+		return i.interpretElvis(n)
+	case *jexl.ArrayLiteralNode:
+		return i.interpretArrayLiteral(n)
+	case *jexl.MapLiteralNode:
+		return i.interpretMapLiteral(n)
+	case *jexl.SetLiteralNode:
+		return i.interpretSetLiteral(n)
+	case *jexl.IfNode:
+		return i.interpretIf(n)
+	case *jexl.ForNode:
+		return i.interpretFor(n)
+	case *jexl.ForeachNode:
+		return i.interpretForeach(n)
+	case *jexl.WhileNode:
+		return i.interpretWhile(n)
+	case *jexl.DoWhileNode:
+		return i.interpretDoWhile(n)
+	case *jexl.BlockNode:
+		return i.interpretBlock(n)
+	case *jexl.BreakNode:
+		return nil, &BreakError{}
+	case *jexl.ContinueNode:
+		return nil, &ContinueError{}
+	case *jexl.ReturnNode:
+		return i.interpretReturn(n)
+	default:
+		return nil, jexl.NewError("unsupported node type")
+	}
+}
+
+// interpretScript выполняет ScriptNode.
+func (i *interpreter) interpretScript(node *jexl.ScriptNode) (any, error) {
+	var result any
+	var err error
+
+	for _, child := range node.Children() {
+		result, err = i.interpret(child)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
+}
+
+// interpretIdentifier выполняет IdentifierNode.
+func (i *interpreter) interpretIdentifier(node *jexl.IdentifierNode) (any, error) {
+	if i.context == nil {
+		return nil, jexl.NewError("context is nil")
+	}
+
+	if !i.context.Has(node.Name()) {
+		if i.options != nil && i.options.Strict() {
+			return nil, jexl.WrapError("variable not found", nil, node.Info())
+		}
+		return nil, nil
+	}
+
+	return i.context.Get(node.Name()), nil
+}
+
+// interpretBinaryOp выполняет BinaryOpNode.
+func (i *interpreter) interpretBinaryOp(node *jexl.BinaryOpNode) (any, error) {
+	left, err := i.interpret(node.Left())
+	if err != nil {
+		return nil, err
+	}
+
+	right, err := i.interpret(node.Right())
+	if err != nil {
+		return nil, err
+	}
+
+	// Получаем арифметику из движка
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		// Используем базовую арифметику
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+
+	// Выполняем операцию в зависимости от типа
+	switch node.Op() {
+	case "+":
+		return arithmetic.Add(left, right)
+	case "-":
+		return arithmetic.Subtract(left, right)
+	case "*":
+		return arithmetic.Multiply(left, right)
+	case "/":
+		return arithmetic.Divide(left, right)
+	case "%":
+		return arithmetic.Modulo(left, right)
+	case "==", "eq":
+		cmp, err := arithmetic.Compare(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return cmp == 0, nil
+	case "!=", "ne":
+		cmp, err := arithmetic.Compare(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return cmp != 0, nil
+	case "<", "lt":
+		cmp, err := arithmetic.Compare(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return cmp < 0, nil
+	case ">", "gt":
+		cmp, err := arithmetic.Compare(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return cmp > 0, nil
+	case "<=", "le":
+		cmp, err := arithmetic.Compare(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return cmp <= 0, nil
+	case ">=", "ge":
+		cmp, err := arithmetic.Compare(left, right)
+		if err != nil {
+			return nil, err
+		}
+		return cmp >= 0, nil
+	case "&&", "and":
+		leftBool, err := arithmetic.ToBoolean(left)
+		if err != nil {
+			return nil, err
+		}
+		if !leftBool {
+			return false, nil
+		}
+		return arithmetic.ToBoolean(right)
+	case "||", "or":
+		leftBool, err := arithmetic.ToBoolean(left)
+		if err != nil {
+			return nil, err
+		}
+		if leftBool {
+			return true, nil
+		}
+		return arithmetic.ToBoolean(right)
+	default:
+		return nil, jexl.WrapError("unsupported binary operation: "+node.Op(), nil, nil)
+	}
+}
+
+// interpretUnaryOp выполняет UnaryOpNode.
+func (i *interpreter) interpretUnaryOp(node *jexl.UnaryOpNode) (any, error) {
+	value, err := i.interpret(node.Operand())
+	if err != nil {
+		return nil, err
+	}
+
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+
+	switch node.Op() {
+	case "+":
+		return value, nil
+	case "-":
+		return arithmetic.Negate(value)
+	case "!":
+		b, err := arithmetic.ToBoolean(value)
+		if err != nil {
+			return nil, err
+		}
+		return !b, nil
+	default:
+		return nil, jexl.WrapError("unsupported unary operation: "+node.Op(), nil, nil)
+	}
+}
+
+// interpretPropertyAccess выполняет PropertyAccessNode.
+func (i *interpreter) interpretPropertyAccess(node *jexl.PropertyAccessNode) (any, error) {
+	obj, err := i.interpret(node.Object())
+	if err != nil {
+		return nil, err
+	}
+
+	if obj == nil {
+		if i.options != nil && i.options.Safe() {
+			return nil, nil
+		}
+		return nil, jexl.NewError("cannot access property on nil")
+	}
+
+	propNode := node.Property()
+	propIdent, ok := propNode.(*jexl.IdentifierNode)
+	if !ok {
+		return nil, jexl.NewError("property must be an identifier")
+	}
+
+	propName := propIdent.Name()
+
+	// Используем Uberspect для получения свойства
+	uberspect := i.engine.Uberspect()
+	if uberspect == nil {
+		return nil, jexl.NewError("uberspect not available")
+	}
+
+	propGet := uberspect.GetProperty(obj, propName)
+	if propGet == nil {
+		if i.options != nil && i.options.Strict() {
+			return nil, jexl.NewError("property not found: " + propName)
+		}
+		return nil, nil
+	}
+
+	return propGet.Invoke(obj)
+}
+
+// interpretIndexAccess выполняет IndexAccessNode.
+func (i *interpreter) interpretIndexAccess(node *jexl.IndexAccessNode) (any, error) {
+	obj, err := i.interpret(node.Object())
+	if err != nil {
+		return nil, err
+	}
+
+	if obj == nil {
+		if i.options != nil && i.options.Safe() {
+			return nil, nil
+		}
+		return nil, jexl.NewError("cannot access index on nil")
+	}
+
+	index, err := i.interpret(node.Index())
+	if err != nil {
+		return nil, err
+	}
+
+	// Поддержка массивов и слайсов
+	switch v := obj.(type) {
+	case []any:
+		idx, ok := index.(int)
+		if !ok {
+			if idx64, ok := index.(int64); ok {
+				idx = int(idx64)
+			} else {
+				return nil, jexl.NewError("array index must be integer")
+			}
+		}
+		if idx < 0 || idx >= len(v) {
+			return nil, jexl.NewError("array index out of bounds")
+		}
+		return v[idx], nil
+	case map[string]any:
+		key, ok := index.(string)
+		if !ok {
+			// Преобразуем ключ в строку
+			key = fmt.Sprintf("%v", index)
+		}
+		val, ok := v[key]
+		if !ok {
+			if i.options != nil && i.options.Strict() {
+				return nil, jexl.NewError("map key not found: " + key)
+			}
+			return nil, nil
+		}
+		return val, nil
+	default:
+		// Попытка использовать reflection через Uberspect
+		uberspect := i.engine.Uberspect()
+		if uberspect != nil {
+			// Для объектов с методом Get или индексацией
+			if propGet := uberspect.GetProperty(obj, fmt.Sprintf("[%v]", index)); propGet != nil {
+				return propGet.Invoke(obj)
+			}
+		}
+		return nil, jexl.NewError("unsupported index access type")
+	}
+}
+
+// interpretMethodCall выполняет MethodCallNode.
+func (i *interpreter) interpretMethodCall(node *jexl.MethodCallNode) (any, error) {
+	// Вычисляем аргументы
+	args := make([]any, len(node.Args()))
+	for j, argNode := range node.Args() {
+		arg, err := i.interpret(argNode)
+		if err != nil {
+			return nil, err
+		}
+		args[j] = arg
+	}
+
+	methodNode := node.Method()
+	methodIdent, ok := methodNode.(*jexl.IdentifierNode)
+	if !ok {
+		return nil, jexl.NewError("method name must be an identifier")
+	}
+	methodName := methodIdent.Name()
+
+	// Если есть target, это вызов метода объекта
+	if targetNode := node.Target(); targetNode != nil {
+		obj, err := i.interpret(targetNode)
+		if err != nil {
+			return nil, err
+		}
+
+		if obj == nil {
+			if i.options != nil && i.options.Safe() {
+				return nil, nil
+			}
+			return nil, jexl.NewError("cannot call method on nil")
+		}
+
+		// Используем Uberspect для вызова метода
+		uberspect := i.engine.Uberspect()
+		if uberspect == nil {
+			return nil, jexl.NewError("uberspect not available")
+		}
+
+		method, err := uberspect.GetMethod(obj, methodName, args)
+		if err != nil || method == nil {
+			if i.options != nil && i.options.Strict() {
+				return nil, jexl.NewError("method not found: " + methodName)
+			}
+			return nil, nil
+		}
+
+		return method.Invoke(obj, args)
+	}
+
+	// Функция верхнего уровня - ищем в контексте
+	if i.context == nil {
+		return nil, jexl.NewError("context is nil")
+	}
+
+	if !i.context.Has(methodName) {
+		if i.options != nil && i.options.Strict() {
+			return nil, jexl.NewError("function not found: " + methodName)
+		}
+		return nil, nil
+	}
+
+	funcValue := i.context.Get(methodName)
+	if funcValue == nil {
+		return nil, nil
+	}
+
+	// Попытка вызвать как функцию
+	if fn, ok := funcValue.(func(...any) (any, error)); ok {
+		return fn(args...)
+	}
+
+	return nil, jexl.NewError("value is not callable: " + methodName)
+}
+
+func (i *interpreter) interpretAssignment(node *jexl.AssignmentNode) (any, error) {
+	if node == nil {
+		return nil, jexl.NewError("assignment node is nil")
+	}
+
+	value, err := i.interpret(node.Value())
+	if err != nil {
+		return nil, err
+	}
+
+	switch target := node.Target().(type) {
+	case *jexl.IdentifierNode:
+		if i.context == nil {
+			return nil, jexl.NewError("context is nil")
+		}
+		i.context.Set(target.Name(), value)
+		return value, nil
+	case *jexl.PropertyAccessNode:
+		return i.assignProperty(target, value)
+	case *jexl.IndexAccessNode:
+		return i.assignIndex(target, value)
+	default:
+		return nil, jexl.NewError("unsupported assignment target")
+	}
+}
+
+func (i *interpreter) assignProperty(target *jexl.PropertyAccessNode, value any) (any, error) {
+	obj, err := i.interpret(target.Object())
+	if err != nil {
+		return nil, err
+	}
+	if obj == nil {
+		if i.options != nil && i.options.Safe() {
+			return nil, nil
+		}
+		return nil, jexl.NewError("cannot assign property on nil")
+	}
+
+	propIdent, ok := target.Property().(*jexl.IdentifierNode)
+	if !ok {
+		return nil, jexl.NewError("property must be an identifier")
+	}
+
+	uberspect := i.engine.Uberspect()
+	if uberspect == nil {
+		return nil, jexl.NewError("uberspect not available")
+	}
+
+	propSet := uberspect.SetProperty(obj, propIdent.Name(), value)
+	if propSet == nil {
+		if i.options != nil && i.options.Strict() {
+			return nil, jexl.NewError("property setter not found: " + propIdent.Name())
+		}
+		return value, nil
+	}
+
+	if err := propSet.Invoke(obj, value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func (i *interpreter) assignIndex(target *jexl.IndexAccessNode, value any) (any, error) {
+	obj, err := i.interpret(target.Object())
+	if err != nil {
+		return nil, err
+	}
+
+	if obj == nil {
+		if i.options != nil && i.options.Safe() {
+			return nil, nil
+		}
+		return nil, jexl.NewError("cannot assign index on nil")
+	}
+
+	index, err := i.interpret(target.Index())
+	if err != nil {
+		return nil, err
+	}
+
+	objValue := reflect.ValueOf(obj)
+	if objValue.Kind() == reflect.Ptr {
+		if objValue.IsNil() {
+			return nil, jexl.NewError("cannot assign index on nil pointer")
+		}
+		objValue = objValue.Elem()
+	}
+
+	switch objValue.Kind() {
+	case reflect.Map:
+		return i.assignMapIndex(objValue, index, value)
+	case reflect.Slice, reflect.Array:
+		return i.assignSliceIndex(objValue, index, value)
+	default:
+		// Попытка использовать uberspect для объекта с индексатором
+		uberspect := i.engine.Uberspect()
+		if uberspect != nil {
+			idxExpr := fmt.Sprintf("[%v]", index)
+			if propSet := uberspect.SetProperty(obj, idxExpr, value); propSet != nil {
+				if err := propSet.Invoke(obj, value); err != nil {
+					return nil, err
+				}
+				return value, nil
+			}
+		}
+		return nil, jexl.NewError("unsupported index assignment type")
+	}
+}
+
+func (i *interpreter) assignMapIndex(mapValue reflect.Value, index any, value any) (any, error) {
+	// Для map[string]any используем прямое присваивание
+	if mapValue.Type().Key().Kind() == reflect.String {
+		keyStr, ok := index.(string)
+		if !ok {
+			keyStr = fmt.Sprintf("%v", index)
+		}
+		
+		// Если это map[string]any, можем напрямую установить значение
+		if mapValue.Type().Elem().Kind() == reflect.Interface {
+			mapValue.SetMapIndex(reflect.ValueOf(keyStr), reflect.ValueOf(value))
+			return value, nil
+		}
+	}
+	
+	keyVal := reflect.ValueOf(index)
+	if !keyVal.Type().AssignableTo(mapValue.Type().Key()) {
+		if keyVal.Type().ConvertibleTo(mapValue.Type().Key()) {
+			keyVal = keyVal.Convert(mapValue.Type().Key())
+		} else {
+			// Для map[string]any пробуем преобразовать ключ в строку
+			if mapValue.Type().Key().Kind() == reflect.String {
+				keyStr := fmt.Sprintf("%v", index)
+				keyVal = reflect.ValueOf(keyStr)
+			} else {
+				return nil, jexl.NewError("map key type mismatch")
+			}
+		}
+	}
+
+	valVal := reflect.ValueOf(value)
+	if !valVal.IsValid() {
+		valVal = reflect.Zero(mapValue.Type().Elem())
+	} else if !valVal.Type().AssignableTo(mapValue.Type().Elem()) {
+		if valVal.Type().ConvertibleTo(mapValue.Type().Elem()) {
+			valVal = valVal.Convert(mapValue.Type().Elem())
+		} else if mapValue.Type().Elem().Kind() == reflect.Interface {
+			// Для map[string]any можем использовать любое значение
+			valVal = reflect.ValueOf(value)
+		} else {
+			return nil, jexl.NewError("map value type mismatch")
+		}
+	}
+
+	mapValue.SetMapIndex(keyVal, valVal)
+	return value, nil
+}
+
+func (i *interpreter) assignSliceIndex(sliceValue reflect.Value, index any, value any) (any, error) {
+	intIndex, err := toIntIndex(index)
+	if err != nil {
+		return nil, err
+	}
+
+	if intIndex < 0 || intIndex >= sliceValue.Len() {
+		return nil, jexl.NewError("slice index out of bounds")
+	}
+
+	// Для []any используем прямое присваивание
+	if sliceValue.Type().Elem().Kind() == reflect.Interface {
+		sliceValue.Index(intIndex).Set(reflect.ValueOf(value))
+		return value, nil
+	}
+
+	valVal := reflect.ValueOf(value)
+	if !valVal.IsValid() {
+		valVal = reflect.Zero(sliceValue.Type().Elem())
+	} else if !valVal.Type().AssignableTo(sliceValue.Type().Elem()) {
+		if valVal.Type().ConvertibleTo(sliceValue.Type().Elem()) {
+			valVal = valVal.Convert(sliceValue.Type().Elem())
+		} else {
+			return nil, jexl.NewError("slice value type mismatch")
+		}
+	}
+
+	sliceValue.Index(intIndex).Set(valVal)
+	return value, nil
+}
+
+func toIntIndex(index any) (int, error) {
+	switch v := index.(type) {
+	case int:
+		return v, nil
+	case int8:
+		return int(v), nil
+	case int16:
+		return int(v), nil
+	case int32:
+		return int(v), nil
+	case int64:
+		return int(v), nil
+	case uint:
+		return int(v), nil
+	case uint8:
+		return int(v), nil
+	case uint16:
+		return int(v), nil
+	case uint32:
+		return int(v), nil
+	case uint64:
+		return int(v), nil
+	default:
+		return 0, jexl.NewError("index must be integer")
+	}
+}
+
+// interpretTernary выполняет тернарный оператор.
+func (i *interpreter) interpretTernary(node *jexl.TernaryNode) (any, error) {
+	condition, err := i.interpret(node.Condition())
+	if err != nil {
+		return nil, err
+	}
+
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+
+	test, err := arithmetic.ToBoolean(condition)
+	if err != nil {
+		if i.options != nil && i.options.Strict() {
+			return nil, err
+		}
+		test = false
+	}
+
+	if test {
+		return i.interpret(node.TrueExpr())
+	}
+	return i.interpret(node.FalseExpr())
+}
+
+// interpretElvis выполняет Elvis оператор.
+func (i *interpreter) interpretElvis(node *jexl.ElvisNode) (any, error) {
+	expr, err := i.interpret(node.Expr())
+	if err != nil {
+		if i.options != nil && i.options.Safe() {
+			// В safe режиме возвращаем default
+			return i.interpret(node.DefaultExpr())
+		}
+		return nil, err
+	}
+
+	if expr == nil {
+		return i.interpret(node.DefaultExpr())
+	}
+
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+
+	test, err := arithmetic.ToBoolean(expr)
+	if err != nil {
+		// Если не удалось преобразовать в boolean, считаем что expr не пустой
+		return expr, nil
+	}
+
+	if !test {
+		return i.interpret(node.DefaultExpr())
+	}
+
+	return expr, nil
+}
+
+// interpretArrayLiteral выполняет литерал массива.
+func (i *interpreter) interpretArrayLiteral(node *jexl.ArrayLiteralNode) (any, error) {
+	elements := node.Elements()
+	result := make([]any, len(elements))
+
+	for j, elem := range elements {
+		val, err := i.interpret(elem)
+		if err != nil {
+			return nil, err
+		}
+		result[j] = val
+	}
+
+	return result, nil
+}
+
+// interpretMapLiteral выполняет литерал мапы.
+func (i *interpreter) interpretMapLiteral(node *jexl.MapLiteralNode) (any, error) {
+	entries := node.Entries()
+	result := make(map[string]any, len(entries))
+
+	for _, entry := range entries {
+		key, err := i.interpret(entry.Key)
+		if err != nil {
+			return nil, err
+		}
+		value, err := i.interpret(entry.Value)
+		if err != nil {
+			return nil, err
+		}
+
+		keyStr, ok := key.(string)
+		if !ok {
+			// Пробуем преобразовать в строку
+			keyStr = fmt.Sprintf("%v", key)
+		}
+		result[keyStr] = value
+	}
+
+	return result, nil
+}
+
+// interpretSetLiteral выполняет литерал множества.
+func (i *interpreter) interpretSetLiteral(node *jexl.SetLiteralNode) (any, error) {
+	elements := node.Elements()
+	if elements == nil {
+		return []any{}, nil
+	}
+
+	result := make([]any, 0, len(elements))
+	seen := make(map[any]bool)
+
+	for _, elem := range elements {
+		val, err := i.interpret(elem)
+		if err != nil {
+			return nil, err
+		}
+
+		// Проверяем на дубликаты (простая реализация)
+		if !seen[val] {
+			seen[val] = true
+			result = append(result, val)
+		}
+	}
+
+	return result, nil
+}
+
+// BreakError используется для выхода из цикла.
+type BreakError struct{}
+
+func (e *BreakError) Error() string {
+	return "break"
+}
+
+// ContinueError используется для продолжения цикла.
+type ContinueError struct{}
+
+func (e *ContinueError) Error() string {
+	return "continue"
+}
+
+// interpretIf выполняет if/else statement.
+func (i *interpreter) interpretIf(node *jexl.IfNode) (any, error) {
+	condition, err := i.interpret(node.Condition())
+	if err != nil {
+		return nil, err
+	}
+
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+
+	test, err := arithmetic.ToBoolean(condition)
+	if err != nil {
+		if i.options != nil && i.options.Strict() {
+			return nil, err
+		}
+		test = false
+	}
+
+	if test {
+		return i.interpret(node.ThenBranch())
+	}
+
+	if node.ElseBranch() != nil {
+		return i.interpret(node.ElseBranch())
+	}
+
+	return nil, nil
+}
+
+// interpretFor выполняет цикл for (init; condition; step) body.
+func (i *interpreter) interpretFor(node *jexl.ForNode) (any, error) {
+	// Инициализация
+	if node.Init() != nil {
+		_, err := i.interpret(node.Init())
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+
+	var result any
+	for {
+		// Проверка условия
+		if node.Condition() != nil {
+			condition, err := i.interpret(node.Condition())
+			if err != nil {
+				return nil, err
+			}
+			test, err := arithmetic.ToBoolean(condition)
+			if err != nil {
+				if i.options != nil && i.options.Strict() {
+					return nil, err
+				}
+				test = false
+			}
+			if !test {
+				break
+			}
+		}
+
+		// Выполнение тела
+		if node.Body() != nil {
+			bodyResult, err := i.interpret(node.Body())
+			if err != nil {
+				if _, isBreak := err.(*BreakError); isBreak {
+					break
+				}
+				if _, isContinue := err.(*ContinueError); isContinue {
+					// Продолжаем цикл
+					if node.Step() != nil {
+						_, err := i.interpret(node.Step())
+						if err != nil {
+							return nil, err
+						}
+					}
+					continue
+				}
+				return nil, err
+			}
+			result = bodyResult
+		}
+
+		// Шаг
+		if node.Step() != nil {
+			_, err := i.interpret(node.Step())
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// interpretForeach выполняет цикл foreach (var x : items) body.
+func (i *interpreter) interpretForeach(node *jexl.ForeachNode) (any, error) {
+	items, err := i.interpret(node.Items())
+	if err != nil {
+		return nil, err
+	}
+
+	varName := node.Variable()
+	var ident *jexl.IdentifierNode
+	if id, ok := varName.(*jexl.IdentifierNode); ok {
+		ident = id
+	} else {
+		return nil, jexl.NewError("foreach variable must be an identifier")
+	}
+
+	// Преобразуем items в итерируемую коллекцию
+	var iterable []any
+	switch v := items.(type) {
+	case []any:
+		iterable = v
+	case []int:
+		iterable = make([]any, len(v))
+		for j, val := range v {
+			iterable[j] = val
+		}
+	case []string:
+		iterable = make([]any, len(v))
+		for j, val := range v {
+			iterable[j] = val
+		}
+	case map[string]any:
+		// Для мап итерируем по значениям
+		iterable = make([]any, 0, len(v))
+		for _, val := range v {
+			iterable = append(iterable, val)
+		}
+	default:
+		return nil, jexl.NewError("foreach items must be iterable")
+	}
+
+	var result any
+	for _, item := range iterable {
+		// Устанавливаем переменную цикла
+		if i.context != nil {
+			i.context.Set(ident.Name(), item)
+		}
+
+		// Выполняем тело
+		if node.Body() != nil {
+			bodyResult, err := i.interpret(node.Body())
+			if err != nil {
+				if _, isBreak := err.(*BreakError); isBreak {
+					break
+				}
+				if _, isContinue := err.(*ContinueError); isContinue {
+					continue
+				}
+				return nil, err
+			}
+			result = bodyResult
+		}
+	}
+
+	return result, nil
+}
+
+// interpretWhile выполняет цикл while (condition) body.
+func (i *interpreter) interpretWhile(node *jexl.WhileNode) (any, error) {
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+
+	var result any
+	for {
+		condition, err := i.interpret(node.Condition())
+		if err != nil {
+			return nil, err
+		}
+
+		test, err := arithmetic.ToBoolean(condition)
+		if err != nil {
+			if i.options != nil && i.options.Strict() {
+				return nil, err
+			}
+			test = false
+		}
+
+		if !test {
+			break
+		}
+
+		if node.Body() != nil {
+			bodyResult, err := i.interpret(node.Body())
+			if err != nil {
+				if _, isBreak := err.(*BreakError); isBreak {
+					break
+				}
+				if _, isContinue := err.(*ContinueError); isContinue {
+					continue
+				}
+				return nil, err
+			}
+			result = bodyResult
+		}
+	}
+
+	return result, nil
+}
+
+// interpretDoWhile выполняет цикл do body while (condition).
+func (i *interpreter) interpretDoWhile(node *jexl.DoWhileNode) (any, error) {
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+
+	var result any
+	for {
+		if node.Body() != nil {
+			bodyResult, err := i.interpret(node.Body())
+			if err != nil {
+				if _, isBreak := err.(*BreakError); isBreak {
+					break
+				}
+				if _, isContinue := err.(*ContinueError); isContinue {
+					// Проверяем условие и продолжаем
+					condition, err := i.interpret(node.Condition())
+					if err != nil {
+						return nil, err
+					}
+					test, err := arithmetic.ToBoolean(condition)
+					if err != nil {
+						if i.options != nil && i.options.Strict() {
+							return nil, err
+						}
+						test = false
+					}
+					if !test {
+						break
+					}
+					continue
+				}
+				return nil, err
+			}
+			result = bodyResult
+		}
+
+		condition, err := i.interpret(node.Condition())
+		if err != nil {
+			return nil, err
+		}
+
+		test, err := arithmetic.ToBoolean(condition)
+		if err != nil {
+			if i.options != nil && i.options.Strict() {
+				return nil, err
+			}
+			test = false
+		}
+
+		if !test {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+// interpretBlock выполняет блок кода.
+func (i *interpreter) interpretBlock(node *jexl.BlockNode) (any, error) {
+	var result any
+	for _, stmt := range node.Statements() {
+		var err error
+		result, err = i.interpret(stmt)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// interpretReturn выполняет return statement.
+func (i *interpreter) interpretReturn(node *jexl.ReturnNode) (any, error) {
+	if node.Value() != nil {
+		return i.interpret(node.Value())
+	}
+	return nil, nil
+}
