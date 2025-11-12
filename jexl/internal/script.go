@@ -118,8 +118,35 @@ func (s *script) UnboundParameters() []string {
 }
 
 // Variables возвращает переменные скрипта.
+// Каждая переменная представлена как список строк (для поддержки ant-ish переменных типа "foo.bar.quux").
 func (s *script) Variables() [][]string {
-	return nil
+	if s.ast == nil {
+		return nil
+	}
+	
+	// Используем collectMode = 1 (расширенный режим) по умолчанию
+	// В будущем можно добавить метод в Engine для получения collectMode
+	collectMode := 1
+	
+	// Собираем переменные из всех дочерних узлов
+	var allVars [][]string
+	for _, child := range s.ast.Children() {
+		vars := jexl.CollectVariables(child, collectMode)
+		allVars = append(allVars, vars...)
+	}
+	
+	// Убираем дубликаты
+	seen := make(map[string]bool)
+	result := make([][]string, 0, len(allVars))
+	for _, vars := range allVars {
+		key := strings.Join(vars, ".")
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, vars)
+		}
+	}
+	
+	return result
 }
 
 // Curry создаёт новый скрипт с частично применёнными аргументами.

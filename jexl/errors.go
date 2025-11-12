@@ -1,6 +1,9 @@
 package jexl
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Error представляет ошибку движка JEXL.
 type Error struct {
@@ -138,8 +141,16 @@ func methodSignature(method string, args []any) string {
 	if len(args) == 0 {
 		return method + "()"
 	}
-	// Упрощённая версия - в реальности нужно форматировать типы
-	return method + "(...)"
+	// Форматируем типы аргументов
+	argTypes := make([]string, len(args))
+	for i, arg := range args {
+		if arg == nil {
+			argTypes[i] = "null"
+		} else {
+			argTypes[i] = fmt.Sprintf("%T", arg)
+		}
+	}
+	return method + "(" + strings.Join(argTypes, ", ") + ")"
 }
 
 var (

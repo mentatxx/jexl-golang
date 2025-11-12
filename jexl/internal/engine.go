@@ -458,6 +458,25 @@ func splitPropertyPath(path string) []string {
 	return strings.Split(path, ".")
 }
 
+// trimSource обрезает пробелы в начале и конце исходного текста.
+// Аналог Engine.trimSource из Java версии.
+func trimSource(str string) string {
+	if str == "" {
+		return ""
+	}
+	// Обрезаем пробелы в начале
+	start := 0
+	for start < len(str) && (str[start] == ' ' || str[start] == '\t' || str[start] == '\n' || str[start] == '\r') {
+		start++
+	}
+	// Обрезаем пробелы в конце
+	end := len(str)
+	for end > start && (str[end-1] == ' ' || str[end-1] == '\t' || str[end-1] == '\n' || str[end-1] == '\r') {
+		end--
+	}
+	return str[start:end]
+}
+
 // emptyContext больше не используется, используем jexl.EmptyContext
 
 const maxInt = int(^uint(0) >> 1)

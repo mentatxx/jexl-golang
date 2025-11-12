@@ -1,5 +1,10 @@
 package jexl
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Node представляет узел AST.
 // Аналог org.apache.commons.jexl3.parser.JexlNode.
 type Node interface {
@@ -1409,4 +1414,177 @@ func (t *TryNode) HasCatch() bool {
 // HasFinally возвращает true, если есть finally блок.
 func (t *TryNode) HasFinally() bool {
 	return t.finallyBlock != nil
+}
+
+// CollectVariables собирает все переменные из AST узла.
+// Возвращает список переменных, где каждая переменная представлена как список строк
+// (для поддержки ant-ish переменных типа "foo.bar.quux").
+// Аналог Engine.getVariables из Java версии.
+func CollectVariables(node Node, collectMode int) [][]string {
+	if node == nil {
+		return nil
+	}
+	
+	collector := &varCollector{
+		mode: collectMode,
+		refs: make(map[string][]string),
+	}
+	
+	collectVariables(node, nil, collector)
+	
+	// Преобразуем map в slice, убирая дубликаты
+	result := make([][]string, 0, len(collector.refs))
+	seen := make(map[string]bool)
+	for _, ref := range collector.refs {
+		key := strings.Join(ref, ".")
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, ref)
+		}
+	}
+	
+	return result
+}
+
+// varCollector собирает переменные из AST.
+type varCollector struct {
+	mode int // режим сбора (0 - строгий, >0 - расширенный)
+	refs map[string][]string // текущая переменная
+	current []string // текущая переменная
+	collecting bool // флаг сбора
+}
+
+// collectVariables рекурсивно обходит AST и собирает переменные.
+func collectVariables(node Node, parent Node, collector *varCollector) {
+	if node == nil {
+		return
+	}
+	
+	// Проверяем тип узла
+	switch n := node.(type) {
+	case *IdentifierNode:
+		// Пропускаем идентификаторы, которые являются методами или функциями
+		if isMethodOrFunction(parent) {
+			collector.collect()
+			return
+		}
+		// Начинаем сбор переменной
+		collector.start()
+		collector.add(n.Name())
+		
+	case *PropertyAccessNode:
+		// Собираем объект
+		collectVariables(n.Object(), node, collector)
+		// Если мы собираем переменную, добавляем свойство
+		if collector.collecting {
+			if prop, ok := n.Property().(*IdentifierNode); ok {
+				collector.add(prop.Name())
+			} else {
+				collector.collect()
+			}
+		} else {
+			collector.collect()
+		}
+		
+	case *IndexAccessNode:
+		// Собираем объект
+		collectVariables(n.Object(), node, collector)
+		// Если режим расширенный и индекс - константа, добавляем его
+		if collector.mode > 0 && collector.collecting {
+			if isConstant(n.Index()) {
+				if lit, ok := n.Index().(*LiteralNode); ok {
+					// Добавляем только строковые и числовые литералы
+					if isStringOrNumber(lit.Value()) {
+						collector.add(fmt.Sprintf("%v", lit.Value()))
+					} else {
+						collector.collect()
+					}
+				} else {
+					collector.collect()
+				}
+			} else {
+				collector.collect()
+				collectVariables(n.Index(), node, collector)
+				collector.collect()
+			}
+		} else {
+			collector.collect()
+			collectVariables(n.Index(), node, collector)
+			collector.collect()
+		}
+		
+	case *MethodCallNode:
+		// Пропускаем метод/функцию, но собираем target и аргументы
+		collector.collect()
+		if n.Target() != nil {
+			collectVariables(n.Target(), node, collector)
+		}
+		collector.collect()
+		for _, arg := range n.Args() {
+			collectVariables(arg, node, collector)
+			collector.collect()
+		}
+		
+	default:
+		// Для всех остальных узлов обходим детей
+		collector.collect()
+		for _, child := range node.Children() {
+			collectVariables(child, node, collector)
+		}
+		collector.collect()
+	}
+}
+
+// isMethodOrFunction проверяет, является ли узел вызовом метода или функции.
+func isMethodOrFunction(node Node) bool {
+	if node == nil {
+		return false
+	}
+	_, ok := node.(*MethodCallNode)
+	return ok
+}
+
+// isConstant проверяет, является ли узел константой.
+func isConstant(node Node) bool {
+	if node == nil {
+		return false
+	}
+	_, ok := node.(*LiteralNode)
+	return ok
+}
+
+// isStringOrNumber проверяет, является ли значение строкой или числом.
+func isStringOrNumber(value any) bool {
+	if value == nil {
+		return false
+	}
+	switch value.(type) {
+	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return true
+	}
+	return false
+}
+
+// start начинает сбор новой переменной.
+func (v *varCollector) start() {
+	v.collect()
+	v.collecting = true
+	v.current = []string{}
+}
+
+// add добавляет сегмент к текущей переменной.
+func (v *varCollector) add(segment string) {
+	if v.collecting {
+		v.current = append(v.current, segment)
+	}
+}
+
+// collect завершает сбор текущей переменной.
+func (v *varCollector) collect() {
+	if v.collecting && len(v.current) > 0 {
+		key := strings.Join(v.current, ".")
+		v.refs[key] = append([]string{}, v.current...)
+		v.current = []string{}
+		v.collecting = false
+	}
 }
