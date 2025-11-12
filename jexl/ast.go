@@ -1148,3 +1148,265 @@ func (l *LambdaNode) Parameters() []*IdentifierNode {
 func (l *LambdaNode) Body() Node {
 	return l.body
 }
+
+// SwitchNode представляет switch statement или expression.
+// Аналог org.apache.commons.jexl3.parser.ASTSwitchStatement.
+type SwitchNode struct {
+	expression   Node
+	cases        []*CaseNode
+	isStatement  bool
+	caseMap      map[any]int // Карта значений case -> индекс (1-based, где 0 - это expression)
+	defaultIndex int         // Индекс default case (0 если нет)
+	source       string
+}
+
+// NewSwitchNode создаёт новый SwitchNode.
+func NewSwitchNode(expression Node, cases []*CaseNode, isStatement bool, source string) *SwitchNode {
+	// Создаём карту значений case для быстрого поиска
+	caseMap := make(map[any]int)
+	defaultIndex := -1
+	
+	for i, c := range cases {
+		index := i + 1 // 1-based индекс (0 - это expression)
+		if c.IsDefault() {
+			defaultIndex = index
+			// Для default используем специальный ключ
+			caseMap[nil] = index
+		} else {
+			for _, val := range c.Values() {
+				// Нормализуем значение (switchCode)
+				code := switchCode(val)
+				caseMap[code] = index
+			}
+		}
+	}
+	
+	return &SwitchNode{
+		expression:   expression,
+		cases:        cases,
+		isStatement:  isStatement,
+		caseMap:      caseMap,
+		defaultIndex: defaultIndex,
+		source:       source,
+	}
+}
+
+// switchCode нормализует значение для switch (аналог JexlParser.switchCode).
+func switchCode(value any) any {
+	if value == nil {
+		return nil // Используем nil как маркер для null
+	}
+	// Для NaN используем специальную обработку
+	if f, ok := value.(float64); ok {
+		if f != f { // NaN check
+			return "NaN"
+		}
+	}
+	return value
+}
+
+// Children возвращает дочерние узлы (выражение и все case).
+func (s *SwitchNode) Children() []Node {
+	children := make([]Node, 0, 1+len(s.cases))
+	children = append(children, s.expression)
+	for _, c := range s.cases {
+		children = append(children, c)
+	}
+	return children
+}
+
+// String возвращает строковое представление.
+func (s *SwitchNode) String() string {
+	return s.source
+}
+
+// SourceText возвращает исходный текст.
+func (s *SwitchNode) SourceText() string {
+	return s.source
+}
+
+// Expression возвращает выражение switch.
+func (s *SwitchNode) Expression() Node {
+	return s.expression
+}
+
+// Cases возвращает список case узлов.
+func (s *SwitchNode) Cases() []*CaseNode {
+	return s.cases
+}
+
+// IsStatement возвращает true, если это statement, false если expression.
+func (s *SwitchNode) IsStatement() bool {
+	return s.isStatement
+}
+
+// SwitchIndex возвращает индекс case для данного значения (1-based, где 0 - это expression).
+// Возвращает -1, если case не найден.
+// Принимает арифметику для сравнения значений (может быть nil).
+func (s *SwitchNode) SwitchIndex(value any, arithmetic Arithmetic) int {
+	code := switchCode(value)
+	index, found := s.caseMap[code]
+	if found {
+		return index
+	}
+	
+	// Если не нашли в карте, пробуем найти через сравнение значений
+	// Это нужно для случаев, когда значения имеют разные типы, но равны
+	if arithmetic != nil {
+		for i, c := range s.cases {
+			if c.IsDefault() {
+				continue
+			}
+			for _, caseValue := range c.Values() {
+				cmp, err := arithmetic.Compare(value, caseValue)
+				if err == nil && cmp == 0 {
+					return i + 1
+				}
+			}
+		}
+	} else {
+		// Без арифметики используем прямое сравнение
+		for i, c := range s.cases {
+			if c.IsDefault() {
+				continue
+			}
+			for _, caseValue := range c.Values() {
+				if caseValue == value {
+					return i + 1
+				}
+			}
+		}
+	}
+	
+	// Если не нашли, пробуем default
+	if s.defaultIndex >= 0 {
+		return s.defaultIndex
+	}
+	return -1
+}
+
+// CaseNode представляет case в switch statement или expression.
+// Аналог org.apache.commons.jexl3.parser.ASTCaseStatement и ASTCaseExpression.
+type CaseNode struct {
+	values []any // Значения для case (пустой список означает default)
+	body   Node  // Тело case
+	source string
+}
+
+// NewCaseNode создаёт новый CaseNode.
+func NewCaseNode(values []any, body Node, source string) *CaseNode {
+	return &CaseNode{
+		values: values,
+		body:   body,
+		source: source,
+	}
+}
+
+// Children возвращает дочерние узлы (тело case).
+func (c *CaseNode) Children() []Node {
+	if c.body == nil {
+		return nil
+	}
+	return []Node{c.body}
+}
+
+// String возвращает строковое представление.
+func (c *CaseNode) String() string {
+	return c.source
+}
+
+// SourceText возвращает исходный текст.
+func (c *CaseNode) SourceText() string {
+	return c.source
+}
+
+// Values возвращает значения case (пустой список означает default).
+func (c *CaseNode) Values() []any {
+	return c.values
+}
+
+// IsDefault возвращает true, если это default case.
+func (c *CaseNode) IsDefault() bool {
+	return len(c.values) == 0
+}
+
+// Body возвращает тело case.
+func (c *CaseNode) Body() Node {
+	return c.body
+}
+
+// TryNode представляет try/catch/finally statement.
+// Аналог org.apache.commons.jexl3.parser.ASTTryStatement.
+type TryNode struct {
+	tryBlock    Node   // Блок try
+	catchVar    string // Имя переменной для catch (может быть пустым)
+	catchBlock  Node   // Блок catch (может быть nil)
+	finallyBlock Node  // Блок finally (может быть nil)
+	source      string
+}
+
+// NewTryNode создаёт новый TryNode.
+func NewTryNode(tryBlock Node, catchVar string, catchBlock, finallyBlock Node, source string) *TryNode {
+	return &TryNode{
+		tryBlock:     tryBlock,
+		catchVar:     catchVar,
+		catchBlock:   catchBlock,
+		finallyBlock: finallyBlock,
+		source:       source,
+	}
+}
+
+// Children возвращает дочерние узлы (try, catch, finally блоки).
+func (t *TryNode) Children() []Node {
+	children := make([]Node, 0, 3)
+	if t.tryBlock != nil {
+		children = append(children, t.tryBlock)
+	}
+	if t.catchBlock != nil {
+		children = append(children, t.catchBlock)
+	}
+	if t.finallyBlock != nil {
+		children = append(children, t.finallyBlock)
+	}
+	return children
+}
+
+// String возвращает строковое представление.
+func (t *TryNode) String() string {
+	return t.source
+}
+
+// SourceText возвращает исходный текст.
+func (t *TryNode) SourceText() string {
+	return t.source
+}
+
+// TryBlock возвращает блок try.
+func (t *TryNode) TryBlock() Node {
+	return t.tryBlock
+}
+
+// CatchVar возвращает имя переменной для catch.
+func (t *TryNode) CatchVar() string {
+	return t.catchVar
+}
+
+// CatchBlock возвращает блок catch (может быть nil).
+func (t *TryNode) CatchBlock() Node {
+	return t.catchBlock
+}
+
+// FinallyBlock возвращает блок finally (может быть nil).
+func (t *TryNode) FinallyBlock() Node {
+	return t.finallyBlock
+}
+
+// HasCatch возвращает true, если есть catch блок.
+func (t *TryNode) HasCatch() bool {
+	return t.catchBlock != nil
+}
+
+// HasFinally возвращает true, если есть finally блок.
+func (t *TryNode) HasFinally() bool {
+	return t.finallyBlock != nil
+}

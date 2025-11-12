@@ -279,6 +279,11 @@ func (u *uberspectImpl) GetMethod(obj any, name string, args []any) (jexl.Method
 		return nil, jexl.NewError("invalid object")
 	}
 
+	// Специальная обработка для hashCode - универсальный метод для всех объектов
+	if name == "hashCode" && len(args) == 0 {
+		return u.getHashCodeMethod(obj)
+	}
+
 	// Специальная обработка для строк (в Go строки не имеют методов)
 	if val.Kind() == reflect.String {
 		str := val.String()
@@ -776,9 +781,106 @@ func (u *uberspectImpl) getStringMethod(str string, name string, args []any) (je
 				return s, nil
 			},
 		}, nil
+	case "hashCode":
+		if len(args) != 0 {
+			return nil, jexl.NewError("hashCode() takes no arguments")
+		}
+		return &stringMethod{
+			name: name,
+			fn: func(s string, _ []any) (any, error) {
+				// Вычисляем hash код строки (аналог Java String.hashCode())
+				hash := int32(0)
+				for _, c := range s {
+					hash = 31*hash + int32(c)
+				}
+				return int64(hash), nil
+			},
+		}, nil
 	default:
 		return nil, jexl.NewError(fmt.Sprintf("string method %s not found", name))
 	}
+}
+
+// getHashCodeMethod возвращает метод hashCode для любого объекта.
+func (u *uberspectImpl) getHashCodeMethod(obj any) (jexl.Method, error) {
+	return &hashCodeMethod{
+		obj: obj,
+	}, nil
+}
+
+// hashCodeMethod реализует метод hashCode для объектов.
+type hashCodeMethod struct {
+	obj any
+}
+
+func (h *hashCodeMethod) Name() string {
+	return "hashCode"
+}
+
+func (h *hashCodeMethod) Invoke(target any, args []any) (any, error) {
+	if len(args) != 0 {
+		return nil, jexl.NewError("hashCode() takes no arguments")
+	}
+	
+	// Используем target, если он передан, иначе используем сохраненный obj
+	obj := target
+	if obj == nil {
+		obj = h.obj
+	}
+	
+	if obj == nil {
+		return nil, nil
+	}
+	
+	// Для строк используем алгоритм Java String.hashCode()
+	if str, ok := obj.(string); ok {
+		hash := int32(0)
+		for _, c := range str {
+			hash = 31*hash + int32(c)
+		}
+		return int64(hash), nil
+	}
+	
+	// Для других типов используем hash функцию Go
+	val := reflect.ValueOf(obj)
+	if !val.IsValid() {
+		return int64(0), nil
+	}
+	
+	// Вычисляем hash на основе типа и значения
+	var hash int64
+	switch val.Kind() {
+	case reflect.String:
+		str := val.String()
+		h := int32(0)
+		for _, c := range str {
+			h = 31*h + int32(c)
+		}
+		hash = int64(h)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		hash = val.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		hash = int64(val.Uint())
+	case reflect.Float32, reflect.Float64:
+		// Для float используем битовое представление
+		hash = int64(val.Float())
+	case reflect.Bool:
+		if val.Bool() {
+			hash = 1
+		} else {
+			hash = 0
+		}
+	default:
+		// Для сложных типов используем адрес объекта как hash
+		if val.CanAddr() {
+			hash = int64(val.UnsafeAddr())
+		} else {
+			// Если нельзя получить адрес, используем 0
+			hash = 0
+		}
+	}
+	
+	return hash, nil
 }
 
 // toInt преобразует значение в int

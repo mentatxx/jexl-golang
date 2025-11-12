@@ -71,7 +71,7 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 						// Обновляем IfNode с else branch
 						// Но IfNode неизменяем, нужно создать новый
 						// Проще всего - заменить последний узел новым IfNode с else branch
-						newIfNode := jexl.NewIfNode(ifNode.Condition(), ifNode.ThenBranch(), elseBranch, 
+						newIfNode := jexl.NewIfNode(ifNode.Condition(), ifNode.ThenBranch(), elseBranch,
 							fmt.Sprintf("%s else %s", ifNode.SourceText(), elseBranch.SourceText()))
 						ast.SetChild(len(children)-1, newIfNode)
 						continue
@@ -92,7 +92,7 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 		// Пробуем распарсить statement, если не получается - expression
 		var node jexl.Node
 		var err error
-		
+
 		// Если скрипт начинается с {, проверяем, является ли это выражением (SetLiteral/MapLiteral) или блоком
 		// В Java версии используется LOOKAHEAD для различения
 		// Если после { идет выражение (не ключевое слово), это литерал, иначе - блок
@@ -149,7 +149,8 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 		}
 		ast.AddChild(node)
 		// Пропускаем точку с запятой после statement/expression
-		if builder.match(tokenSemicolon) {
+		hasSemicolon := builder.match(tokenSemicolon)
+		if hasSemicolon {
 			// После точки с запятой продолжаем цикл
 			continue
 		}
@@ -157,10 +158,83 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 		if builder.peek().typ == tokenEOF {
 			break
 		}
-		// Если следующий токен - не EOF и не точка с запятой, это может быть допустимо
-		// для последнего выражения в скрипте, но лучше попробовать продолжить парсинг
-		// Если это не точка с запятой и не EOF, пробуем продолжить парсинг следующего statement/expression
-		// Это позволяет обрабатывать скрипты без точек с запятой между statements
+
+		// Проверяем, является ли следующий токен началом statement
+		nextTok := builder.peek()
+		isNextStatement := nextTok.typ == tokenIf || nextTok.typ == tokenFor ||
+			nextTok.typ == tokenWhile || nextTok.typ == tokenDo ||
+			nextTok.typ == tokenReturn || nextTok.typ == tokenBreak ||
+			nextTok.typ == tokenContinue || nextTok.typ == tokenVar ||
+			nextTok.typ == tokenTry || nextTok.typ == tokenSwitch
+
+		// Проверяем, является ли текущий узел expression (не statement)
+		isCurrentExpression := isExpressionNode(node)
+
+		// Проверяем, является ли текущий узел statement
+		isCurrentStatement := !isCurrentExpression && node != nil
+
+		// Если текущий узел - expression, а следующий - не statement, нужна точка с запятой
+		if isCurrentExpression && !isNextStatement {
+			// Проверяем, не является ли следующий токен началом expression
+			if nextTok.typ == tokenNumber || nextTok.typ == tokenIdent ||
+				nextTok.typ == tokenString || nextTok.typ == tokenLParen ||
+				nextTok.typ == tokenLBracket || nextTok.typ == tokenPlus ||
+				nextTok.typ == tokenMinus || nextTok.typ == tokenBang ||
+				nextTok.typ == tokenLBrace {
+				return nil, builder.errorf("missing semicolon between expressions")
+			}
+		}
+
+		// Если текущий узел - statement с точкой с запятой, а следующий - expression, затем еще что-то
+		// Например: "if (true) 2; 3 {}" - после 2; идет 3, затем {}
+		if isCurrentStatement && hasSemicolon && !isNextStatement {
+			// Сохраняем позицию для проверки
+			savedPos := builder.pos
+			// Пробуем распарсить следующее выражение
+			nextNode, err := builder.parseExpression(0)
+			if err == nil && nextNode != nil {
+				// Проверяем, что идет после этого выражения
+				if builder.peek().typ != tokenEOF && builder.peek().typ != tokenSemicolon {
+					// Если после expression идет еще что-то (не EOF и не ;), это ошибка
+					if builder.peek().typ == tokenLBrace || builder.peek().typ == tokenNumber ||
+						builder.peek().typ == tokenIdent || builder.peek().typ == tokenString {
+						builder.pos = savedPos // Откатываемся
+						return nil, builder.errorf("missing semicolon between expressions")
+					}
+				}
+			}
+			builder.pos = savedPos // Откатываемся
+		}
+
+		// Проверка для случая "while (x) 1 if (y) 2 3"
+		// После statement без точки с запятой идет другой statement, затем expression
+		if isCurrentStatement && !hasSemicolon && isNextStatement {
+			// Сохраняем позицию
+			savedPos := builder.pos
+			// Пробуем распарсить следующий statement
+			nextStmt, err := builder.parseStatement()
+			if err == nil && nextStmt != nil {
+				// Проверяем, что идет после statement
+				// Если это expression (не statement и не EOF), это ошибка
+				afterStmt := builder.peek()
+				if afterStmt.typ != tokenEOF && afterStmt.typ != tokenSemicolon {
+					isAfterStmt := afterStmt.typ == tokenIf || afterStmt.typ == tokenFor ||
+						afterStmt.typ == tokenWhile || afterStmt.typ == tokenDo ||
+						afterStmt.typ == tokenReturn || afterStmt.typ == tokenBreak ||
+						afterStmt.typ == tokenContinue || afterStmt.typ == tokenVar ||
+						afterStmt.typ == tokenTry || afterStmt.typ == tokenSwitch ||
+						afterStmt.typ == tokenLBrace
+					if !isAfterStmt {
+						// После statement идет expression без точки с запятой - ошибка
+						builder.pos = savedPos
+						return nil, builder.errorf("missing semicolon between statements")
+					}
+				}
+			}
+			builder.pos = savedPos // Откатываемся
+		}
+
+		// Продолжаем парсинг следующего statement/expression
 		continue
 	}
 
@@ -319,7 +393,7 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 			// Это lambda функция - параметр уже прочитан в tok
 			param := jexl.NewIdentifierNode(tok.literal, tok.literal)
 			parameters := []*jexl.IdentifierNode{param}
-			
+
 			// Парсим стрелку: -> или =>
 			var arrow string
 			if p.peek().typ == tokenLambda {
@@ -331,7 +405,7 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 			} else {
 				return nil, p.errorf("expected '->' or '=>' in lambda")
 			}
-			
+
 			// Парсим тело lambda
 			var body jexl.Node
 			var err error
@@ -343,7 +417,7 @@ func (p *simpleParser) parseExpression(precedence int) (jexl.Node, error) {
 			if err != nil {
 				return nil, err
 			}
-			
+
 			source := tok.literal + " " + arrow + " " + body.SourceText()
 			left = jexl.NewLambdaNode(parameters, body, source)
 		} else {
@@ -747,7 +821,7 @@ func (p *simpleParser) parseLambda(lparenRead bool) (jexl.Node, error) {
 			p.pos++
 			hasComma := p.pos < len(p.tokens) && p.tokens[p.pos].typ == tokenComma
 			p.pos = savedPos
-			
+
 			if hasComma {
 				// Множественные параметры в скобках: (x, y) - но ( еще не прочитан, это ошибка
 				return nil, p.errorf("expected '(' before lambda parameters")
@@ -757,7 +831,7 @@ func (p *simpleParser) parseLambda(lparenRead bool) (jexl.Node, error) {
 				param := jexl.NewIdentifierNode(paramTok.literal, paramTok.literal)
 				parameters = append(parameters, param)
 				sourceStart = paramTok.literal
-				
+
 				// Парсим стрелку и тело
 				var arrow string
 				if p.peek().typ == tokenLambda {
@@ -769,7 +843,7 @@ func (p *simpleParser) parseLambda(lparenRead bool) (jexl.Node, error) {
 				} else {
 					return nil, p.errorf("expected '->' or '=>' in lambda")
 				}
-				
+
 				var body jexl.Node
 				var err error
 				if p.peek().typ == tokenLBrace {
@@ -780,7 +854,7 @@ func (p *simpleParser) parseLambda(lparenRead bool) (jexl.Node, error) {
 				if err != nil {
 					return nil, err
 				}
-				
+
 				source := sourceStart + " " + arrow + " " + body.SourceText()
 				return jexl.NewLambdaNode(parameters, body, source), nil
 			}
@@ -894,6 +968,10 @@ func (p *simpleParser) parseStatement() (jexl.Node, error) {
 		return p.parseReturnStatement()
 	case tokenVar:
 		return p.parseVarStatement()
+	case tokenSwitch:
+		return p.parseSwitchStatement()
+	case tokenTry:
+		return p.parseTryStatement()
 	case tokenLBrace:
 		return p.parseBlock()
 	default:
@@ -963,7 +1041,7 @@ func (p *simpleParser) parseForStatement() (jexl.Node, error) {
 	if err := p.expect(tokenLParen); err != nil {
 		return nil, err
 	}
-	
+
 	// Увеличиваем счетчик циклов
 	p.loopCount++
 	defer func() { p.loopCount-- }()
@@ -1100,7 +1178,7 @@ func (p *simpleParser) parseWhileStatement() (jexl.Node, error) {
 	if err := p.expect(tokenLParen); err != nil {
 		return nil, err
 	}
-	
+
 	// Увеличиваем счетчик циклов
 	p.loopCount++
 	defer func() { p.loopCount-- }()
@@ -1131,7 +1209,7 @@ func (p *simpleParser) parseDoWhileStatement() (jexl.Node, error) {
 		return nil, p.errorf("loops are not enabled")
 	}
 	p.next() // consume 'do'
-	
+
 	// Увеличиваем счетчик циклов
 	p.loopCount++
 	defer func() { p.loopCount-- }()
@@ -1203,11 +1281,11 @@ func (p *simpleParser) parseVarStatement() (jexl.Node, error) {
 		return nil, p.errorf("expected identifier after 'var'")
 	}
 	name := jexl.NewIdentifierNode(nameTok.literal, nameTok.literal)
-	
+
 	var value jexl.Node
 	var err error
 	source := "var " + nameTok.literal
-	
+
 	// Проверяем, есть ли присваивание
 	if p.peek().typ == tokenEqual {
 		p.next() // consume '='
@@ -1217,24 +1295,296 @@ func (p *simpleParser) parseVarStatement() (jexl.Node, error) {
 		}
 		source += " = " + value.SourceText()
 	}
-	
+
 	return jexl.NewVarNode(name, value, source), nil
+}
+
+// parseSwitchStatement парсит switch statement или expression.
+// switch (expr) { case 1: ... case 2: ... default: ... }
+func (p *simpleParser) parseSwitchStatement() (jexl.Node, error) {
+	p.next() // consume 'switch'
+
+	if err := p.expect(tokenLParen); err != nil {
+		return nil, err
+	}
+
+	expression, err := p.parseExpression(0)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := p.expect(tokenRParen); err != nil {
+		return nil, err
+	}
+
+	if err := p.expect(tokenLBrace); err != nil {
+		return nil, err
+	}
+
+	var cases []*jexl.CaseNode
+	var isStatement bool = true
+	caseMap := make(map[any]bool) // Для проверки дубликатов
+	hasDefault := false
+
+	// Проверяем, является ли это statement или expression
+	// Если первый case использует -> или =>, это expression
+	// Иначе это statement
+	peekTok := p.peek()
+	if peekTok.typ == tokenCase {
+		// Пропускаем case и проверяем, что идет после значения
+		savedPos := p.pos
+		p.next() // consume 'case'
+		// Парсим значение case
+		_, err := p.parseExpression(0)
+		if err == nil {
+			// Проверяем, что идет после значения
+			if p.peek().typ == tokenLambda || p.peek().typ == tokenFatArrow {
+				isStatement = false
+			}
+		}
+		p.pos = savedPos // Откатываемся
+	}
+
+	for p.peek().typ != tokenRBrace && p.peek().typ != tokenEOF {
+		if p.peek().typ == tokenCase {
+			// Парсим case
+			caseNode, err := p.parseCaseNode(isStatement, caseMap, &hasDefault)
+			if err != nil {
+				return nil, err
+			}
+			if caseNode != nil {
+				cases = append(cases, caseNode)
+			}
+		} else if p.peek().typ == tokenDefault {
+			// Парсим default
+			caseNode, err := p.parseDefaultNode(isStatement, &hasDefault)
+			if err != nil {
+				return nil, err
+			}
+			if caseNode != nil {
+				cases = append(cases, caseNode)
+			}
+		} else {
+			// Неожиданный токен
+			return nil, p.errorf("expected 'case' or 'default' in switch statement")
+		}
+	}
+
+	if err := p.expect(tokenRBrace); err != nil {
+		return nil, err
+	}
+
+	source := fmt.Sprintf("switch (%s) {", expression.SourceText())
+	for _, c := range cases {
+		source += " " + c.SourceText()
+	}
+	source += " }"
+
+	return jexl.NewSwitchNode(expression, cases, isStatement, source), nil
+}
+
+// parseCaseNode парсит case узел.
+func (p *simpleParser) parseCaseNode(isStatement bool, caseMap map[any]bool, hasDefault *bool) (*jexl.CaseNode, error) {
+	p.next() // consume 'case'
+
+	var values []any
+	sourceStart := "case"
+
+	// Парсим значения case (может быть несколько через запятую)
+	for {
+		value, err := p.parseExpression(0)
+		if err != nil {
+			return nil, err
+		}
+
+		// Вычисляем значение для проверки дубликатов
+		// Для простоты используем строковое представление
+		valStr := value.SourceText()
+		if caseMap[valStr] {
+			return nil, p.errorf("duplicate case value: %s", valStr)
+		}
+		caseMap[valStr] = true
+
+		// Пытаемся получить константное значение
+		if lit, ok := value.(*jexl.LiteralNode); ok {
+			values = append(values, lit.Value())
+		} else {
+			// Для не-литералов используем строковое представление
+			values = append(values, valStr)
+		}
+
+		sourceStart += " " + valStr
+
+		// Проверяем, есть ли еще значения
+		if p.peek().typ == tokenComma {
+			p.next() // consume ','
+			sourceStart += ","
+			continue
+		}
+		break
+	}
+
+	var body jexl.Node
+	var err error
+
+	if isStatement {
+		// Для statement ожидаем ':'
+		if err := p.expect(tokenColon); err != nil {
+			return nil, err
+		}
+		sourceStart += ":"
+
+		// Парсим тело case (может быть блок или statement)
+		body, err = p.parseStatementOrBlock()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Для expression ожидаем -> или =>
+		if p.peek().typ != tokenLambda && p.peek().typ != tokenFatArrow {
+			return nil, p.errorf("expected '->' or '=>' in switch expression")
+		}
+		p.next() // consume '->' or '=>'
+
+		// Парсим выражение
+		body, err = p.parseExpression(0)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	source := sourceStart + " " + body.SourceText()
+	return jexl.NewCaseNode(values, body, source), nil
+}
+
+// parseDefaultNode парсит default узел.
+func (p *simpleParser) parseDefaultNode(isStatement bool, hasDefault *bool) (*jexl.CaseNode, error) {
+	if *hasDefault {
+		return nil, p.errorf("duplicate default case")
+	}
+	*hasDefault = true
+
+	p.next() // consume 'default'
+
+	var body jexl.Node
+	var err error
+	sourceStart := "default"
+
+	if isStatement {
+		// Для statement ожидаем ':'
+		if err := p.expect(tokenColon); err != nil {
+			return nil, err
+		}
+		sourceStart += ":"
+
+		// Парсим тело default (может быть блок или statement)
+		body, err = p.parseStatementOrBlock()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Для expression ожидаем -> или =>
+		if p.peek().typ != tokenLambda && p.peek().typ != tokenFatArrow {
+			return nil, p.errorf("expected '->' or '=>' in switch expression")
+		}
+		p.next() // consume '->' or '=>'
+
+		// Парсим выражение
+		body, err = p.parseExpression(0)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	source := sourceStart + " " + body.SourceText()
+	return jexl.NewCaseNode(nil, body, source), nil
+}
+
+// parseTryStatement парсит try/catch/finally statement.
+// try { ... } catch (e) { ... } finally { ... }
+func (p *simpleParser) parseTryStatement() (jexl.Node, error) {
+	sourceStart := "try"
+	p.next() // consume 'try'
+
+	// Парсим try блок
+	tryBlock, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+
+	var catchVar string
+	var catchBlock jexl.Node
+	var finallyBlock jexl.Node
+
+	// Парсим catch и/или finally
+	for p.peek().typ == tokenCatch || p.peek().typ == tokenFinally {
+		if p.peek().typ == tokenCatch {
+			if catchBlock != nil {
+				return nil, p.errorf("multiple catch blocks not allowed")
+			}
+			p.next() // consume 'catch'
+
+			// Парсим переменную catch (может быть пустой)
+			if p.peek().typ == tokenLParen {
+				p.next() // consume '('
+				if p.peek().typ == tokenIdent {
+					catchVar = p.next().literal
+				}
+				if err := p.expect(tokenRParen); err != nil {
+					return nil, err
+				}
+			}
+
+			// Парсим catch блок
+			var err error
+			catchBlock, err = p.parseBlock()
+			if err != nil {
+				return nil, err
+			}
+		} else if p.peek().typ == tokenFinally {
+			if finallyBlock != nil {
+				return nil, p.errorf("multiple finally blocks not allowed")
+			}
+			p.next() // consume 'finally'
+
+			// Парсим finally блок
+			var err error
+			finallyBlock, err = p.parseBlock()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	source := sourceStart + " " + tryBlock.SourceText()
+	if catchBlock != nil {
+		if catchVar != "" {
+			source += " catch (" + catchVar + ") " + catchBlock.SourceText()
+		} else {
+			source += " catch " + catchBlock.SourceText()
+		}
+	}
+	if finallyBlock != nil {
+		source += " finally " + finallyBlock.SourceText()
+	}
+
+	return jexl.NewTryNode(tryBlock, catchVar, catchBlock, finallyBlock, source), nil
 }
 
 // parseBlock парсит блок { statements }
 func (p *simpleParser) parseBlock() (jexl.Node, error) {
 	p.next() // consume '{'
-	
+
 	// Проверяем, не является ли это пустым блоком
 	if p.peek().typ == tokenRBrace {
 		p.next() // consume '}'
 		return jexl.NewBlockNode(nil, "{}"), nil
 	}
-	
+
 	// НЕ пытаемся парсить блок как литерал множества/мапы
 	// Блоки всегда должны парситься как BlockNode, даже если они содержат только одно выражение
 	// Это важно для lambda функций: (x) -> { x + 1 } должно быть блоком, а не множеством
-	
+
 	var statements []jexl.Node
 
 	for p.peek().typ != tokenRBrace && p.peek().typ != tokenEOF {
@@ -1460,29 +1810,29 @@ const (
 	tokenQuestion
 	tokenQuestionQuestion
 	// Битовые операторы
-	tokenAmpersand      // &
-	tokenPipe           // |
-	tokenCaret          // ^
-	tokenTilde          // ~
-	tokenShiftLeft      // <<
-	tokenShiftRight     // >>
-	tokenShiftRightU    // >>>
+	tokenAmpersand   // &
+	tokenPipe        // |
+	tokenCaret       // ^
+	tokenTilde       // ~
+	tokenShiftLeft   // <<
+	tokenShiftRight  // >>
+	tokenShiftRightU // >>>
 	// Строковые операторы
-	tokenContains       // =~
-	tokenStartsWith     // =^
-	tokenEndsWith       // =$
-	tokenNotContains    // !~
-	tokenNotStartsWith  // !^
-	tokenNotEndsWith    // !$
-	tokenRange          // ..
+	tokenContains      // =~
+	tokenStartsWith    // =^
+	tokenEndsWith      // =$
+	tokenNotContains   // !~
+	tokenNotStartsWith // !^
+	tokenNotEndsWith   // !$
+	tokenRange         // ..
 	// Side-effect операторы
-	tokenPlusEqual      // +=
-	tokenMinusEqual     // -=
-	tokenStarEqual      // *=
-	tokenSlashEqual     // /=
-	tokenPercentEqual   // %=
-	tokenPlusPlus       // ++
-	tokenMinusMinus     // --
+	tokenPlusEqual    // +=
+	tokenMinusEqual   // -=
+	tokenStarEqual    // *=
+	tokenSlashEqual   // /=
+	tokenPercentEqual // %=
+	tokenPlusPlus     // ++
+	tokenMinusMinus   // --
 	// Ключевые слова
 	tokenIf
 	tokenElse
@@ -1496,6 +1846,12 @@ const (
 	tokenEmpty
 	tokenSize
 	tokenNot
+	tokenSwitch
+	tokenCase
+	tokenDefault
+	tokenTry
+	tokenCatch
+	tokenFinally
 	// Lambda операторы
 	tokenLambda   // ->
 	tokenFatArrow // =>
@@ -1571,6 +1927,14 @@ func (l *lexer) nextToken() token {
 	case '/':
 		if l.match('=') {
 			return token{typ: tokenSlashEqual, literal: "/="}
+		}
+		if l.match('/') {
+			// Однострочный комментарий: // ...
+			return l.singleLineComment()
+		}
+		if l.match('*') {
+			// Многострочный комментарий: /* ... */
+			return l.multiLineComment()
 		}
 		return token{typ: tokenSlash, literal: "/"}
 	case '%':
@@ -1692,14 +2056,14 @@ func (l *lexer) nextToken() token {
 func (l *lexer) string(quote rune) token {
 	var value strings.Builder
 	escape := false
-	
+
 	for {
 		if l.isAtEnd() {
 			return l.errorToken("unterminated string")
 		}
-		
+
 		c := l.peek()
-		
+
 		if escape {
 			escape = false
 			switch c {
@@ -1721,9 +2085,9 @@ func (l *lexer) string(quote rune) token {
 				hex := ""
 				for i := 0; i < 4 && !l.isAtEnd(); i++ {
 					hexChar := l.peek()
-					if (hexChar >= '0' && hexChar <= '9') || 
-					   (hexChar >= 'A' && hexChar <= 'F') || 
-					   (hexChar >= 'a' && hexChar <= 'f') {
+					if (hexChar >= '0' && hexChar <= '9') ||
+						(hexChar >= 'A' && hexChar <= 'F') ||
+						(hexChar >= 'a' && hexChar <= 'f') {
 						hex += string(hexChar)
 						l.advance()
 					} else {
@@ -1753,17 +2117,17 @@ func (l *lexer) string(quote rune) token {
 			l.advance()
 			continue
 		}
-		
+
 		if c == '\\' {
 			escape = true
 			l.advance()
 			continue
 		}
-		
+
 		if c == quote {
 			break
 		}
-		
+
 		value.WriteRune(c)
 		l.advance()
 	}
@@ -1827,6 +2191,18 @@ func (l *lexer) identifier() token {
 		tokType = tokenSize
 	case "not":
 		tokType = tokenNot
+	case "switch":
+		tokType = tokenSwitch
+	case "case":
+		tokType = tokenCase
+	case "default":
+		tokType = tokenDefault
+	case "try":
+		tokType = tokenTry
+	case "catch":
+		tokType = tokenCatch
+	case "finally":
+		tokType = tokenFinally
 	case "eq":
 		tokType = tokenEqualEqual
 	case "ne":
@@ -1887,8 +2263,8 @@ func (l *lexer) skipWhitespace() {
 		c := l.peek()
 		if c == ' ' || c == '\r' || c == '\n' || c == '\t' {
 			l.advance()
-		} else if c == '/' && l.peekNext() == '/' {
-			// комментарий
+		} else if c == '#' {
+			// Hash комментарий: # ... до конца строки
 			for l.peek() != '\n' && !l.isAtEnd() {
 				l.advance()
 			}
@@ -1896,6 +2272,32 @@ func (l *lexer) skipWhitespace() {
 			break
 		}
 	}
+}
+
+// singleLineComment обрабатывает однострочный комментарий // ...
+func (l *lexer) singleLineComment() token {
+	// Пропускаем все символы до конца строки
+	for l.peek() != '\n' && !l.isAtEnd() {
+		l.advance()
+	}
+	// Возвращаем следующий токен (комментарий пропущен)
+	return l.nextToken()
+}
+
+// multiLineComment обрабатывает многострочный комментарий /* ... */
+func (l *lexer) multiLineComment() token {
+	// Пропускаем все символы до */
+	for !l.isAtEnd() {
+		if l.peek() == '*' && l.peekNext() == '/' {
+			l.advance() // consume '*'
+			l.advance() // consume '/'
+			break
+		}
+		l.advance()
+	}
+	// Если комментарий не закрыт, это ошибка, но мы просто продолжаем
+	// Возвращаем следующий токен (комментарий пропущен)
+	return l.nextToken()
 }
 
 func (l *lexer) isAtEnd() bool {
@@ -1979,19 +2381,92 @@ func parseStringLiteral(s string) (string, error) {
 		return "", fmt.Errorf("invalid string literal")
 	}
 	value := s[1 : len(s)-1]
-	// Простая обработка escape-последовательностей
-	value = strings.ReplaceAll(value, "\\n", "\n")
-	value = strings.ReplaceAll(value, "\\t", "\t")
-	value = strings.ReplaceAll(value, "\\r", "\r")
-	value = strings.ReplaceAll(value, "\\\"", "\"")
-	value = strings.ReplaceAll(value, "\\'", "'")
-	value = strings.ReplaceAll(value, "\\\\", "\\")
-	return value, nil
+
+	// Обрабатываем escape-последовательности
+	var result strings.Builder
+	result.Grow(len(value))
+
+	for i := 0; i < len(value); i++ {
+		if value[i] == '\\' && i+1 < len(value) {
+			// Escape-последовательность
+			next := value[i+1]
+			switch next {
+			case 'b':
+				result.WriteByte('\b') // backspace
+				i++
+			case 't':
+				result.WriteByte('\t') // tab
+				i++
+			case 'n':
+				result.WriteByte('\n') // newline
+				i++
+			case 'f':
+				result.WriteByte('\f') // form feed
+				i++
+			case 'r':
+				result.WriteByte('\r') // carriage return
+				i++
+			case '\\':
+				result.WriteByte('\\') // backslash
+				i++
+			case '\'':
+				result.WriteByte('\'') // single quote
+				i++
+			case '"':
+				result.WriteByte('"') // double quote
+				i++
+			case 'u':
+				// Unicode escape sequence: \uXXXX
+				if i+5 < len(value) {
+					hexStr := value[i+2 : i+6]
+					code, err := strconv.ParseUint(hexStr, 16, 16)
+					if err == nil {
+						result.WriteRune(rune(code))
+						i += 5 // пропускаем \uXXXX
+					} else {
+						// Невалидная последовательность, оставляем как есть
+						result.WriteByte('\\')
+						result.WriteByte('u')
+					}
+				} else {
+					// Недостаточно символов для Unicode escape
+					result.WriteByte('\\')
+					result.WriteByte('u')
+				}
+			default:
+				// Неизвестная escape-последовательность, оставляем как есть
+				result.WriteByte('\\')
+				result.WriteByte(next)
+				i++
+			}
+		} else {
+			result.WriteByte(value[i])
+		}
+	}
+
+	return result.String(), nil
 }
 
 func isAssignableTarget(node jexl.Node) bool {
 	switch node.(type) {
 	case *jexl.IdentifierNode, *jexl.PropertyAccessNode, *jexl.IndexAccessNode:
+		return true
+	default:
+		return false
+	}
+}
+
+// isExpressionNode проверяет, является ли узел expression (не statement).
+func isExpressionNode(node jexl.Node) bool {
+	if node == nil {
+		return false
+	}
+	switch node.(type) {
+	case *jexl.LiteralNode, *jexl.BinaryOpNode, *jexl.UnaryOpNode,
+		*jexl.IdentifierNode, *jexl.PropertyAccessNode, *jexl.IndexAccessNode,
+		*jexl.MethodCallNode, *jexl.AssignmentNode, *jexl.TernaryNode,
+		*jexl.ElvisNode, *jexl.ArrayLiteralNode, *jexl.MapLiteralNode,
+		*jexl.SetLiteralNode, *jexl.RangeNode, *jexl.LambdaNode:
 		return true
 	default:
 		return false

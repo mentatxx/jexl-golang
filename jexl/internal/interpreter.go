@@ -81,6 +81,10 @@ func (i *interpreter) interpret(node jexl.Node) (any, error) {
 		return i.interpretVar(n)
 	case *jexl.LambdaNode:
 		return i.interpretLambda(n)
+	case *jexl.SwitchNode:
+		return i.interpretSwitch(n)
+	case *jexl.TryNode:
+		return i.interpretTry(n)
 	case nil:
 		// Пустое statement (;)
 		return nil, nil
@@ -1483,5 +1487,107 @@ func (i *interpreter) interpretSize(value any) (any, error) {
 			return nil, jexl.NewError("size() is not applicable to this type")
 		}
 	}
+}
+
+// interpretSwitch выполняет switch statement или expression.
+func (i *interpreter) interpretSwitch(node *jexl.SwitchNode) (any, error) {
+	// Вычисляем значение switch выражения
+	value, err := i.interpret(node.Expression())
+	if err != nil {
+		return nil, err
+	}
+	
+	// Получаем арифметику для сравнения
+	arithmetic := i.engine.Arithmetic()
+	if arithmetic == nil {
+		arithmetic = jexl.NewBaseArithmetic(true, nil, 0)
+	}
+	
+	// Находим индекс case (1-based, где 0 - это expression)
+	index := node.SwitchIndex(value, arithmetic)
+	
+	if index > 0 {
+		if !node.IsStatement() {
+			// Для expression просто возвращаем значение найденного case
+			cases := node.Cases()
+			if index-1 < len(cases) {
+				return i.interpret(cases[index-1].Body())
+			}
+		} else {
+			// Для statement выполняем все case от найденного до конца (fall-through)
+			cases := node.Cases()
+			var result any
+			
+			// Выполняем все case от найденного индекса до конца
+			for caseIdx := index - 1; caseIdx < len(cases); caseIdx++ {
+				caseNode := cases[caseIdx]
+				var err error
+				result, err = i.interpret(caseNode.Body())
+				if err != nil {
+					// Проверяем, не является ли это break/continue
+					if _, ok := err.(*BreakError); ok {
+						// break выходит из switch
+						break
+					}
+					if _, ok := err.(*ContinueError); ok {
+						// continue переходит к следующему case
+						continue
+					}
+					return nil, err
+				}
+			}
+			return result, nil
+		}
+	}
+	
+	// Если не нашли совпадения и нет default, возвращаем ошибку в strict режиме
+	if i.options != nil && i.options.Strict() {
+		return nil, jexl.NewError(fmt.Sprintf("no case in switch for value: %v", value))
+	}
+	return nil, nil
+}
+
+// interpretTry выполняет try/catch/finally statement.
+func (i *interpreter) interpretTry(node *jexl.TryNode) (any, error) {
+	var result any
+	var err error
+	
+	// Выполняем try блок
+	result, err = i.interpret(node.TryBlock())
+	
+	// Если произошла ошибка и есть catch блок
+	if err != nil && node.HasCatch() {
+		// Сохраняем ошибку в переменную catch, если она указана
+		if node.CatchVar() != "" {
+			// Создаём строковое представление ошибки
+			errStr := err.Error()
+			if i.context != nil {
+				i.context.Set(node.CatchVar(), errStr)
+			}
+		}
+		
+		// Выполняем catch блок
+		catchResult, catchErr := i.interpret(node.CatchBlock())
+		if catchErr != nil {
+			return nil, catchErr
+		}
+		result = catchResult
+		err = nil // Ошибка обработана
+	}
+	
+	// Выполняем finally блок, если он есть
+	if node.HasFinally() {
+		_, finallyErr := i.interpret(node.FinallyBlock())
+		if finallyErr != nil {
+			return nil, finallyErr
+		}
+	}
+	
+	// Если ошибка не была обработана, возвращаем её
+	if err != nil {
+		return nil, err
+	}
+	
+	return result, nil
 }
 

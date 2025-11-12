@@ -1342,12 +1342,15 @@ func TestIssue98(t *testing.T) {
 	ctx.Set("fn", fn)
 
 	// Тесты с разными способами экранирования
+	// В Java: 'DOMAIN\\somename' парсится как DOMAIN\somename (1 обратный слеш)
+	// В Go: 'DOMAIN\\somename' парсится как DOMAIN\somename (1 обратный слеш)
+	// replace('\\\\', '\\\\\\\\') заменяет \\ на \\\\
 	testCases := []struct {
 		expr     string
 		expected string
 	}{
-		{"fn.replace('DOMAIN\\\\somename', '\\\\\\\\', '\\\\\\\\\\\\\\\\')", "DOMAIN\\\\somename"},
-		{"fn.replace(\"DOMAIN\\\\somename\", \"\\\\\\\\\", \"\\\\\\\\\\\\\\\\\")", "DOMAIN\\\\somename"},
+		{"fn.replace('DOMAIN\\somename', '\\\\', '\\\\\\\\')", "DOMAIN\\\\somename"},
+		{"fn.replace(\"DOMAIN\\somename\", \"\\\\\", \"\\\\\\\\\")", "DOMAIN\\\\somename"},
 	}
 
 	for _, tc := range testCases {
