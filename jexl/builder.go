@@ -135,6 +135,56 @@ func (b *Builder) Debug(flag bool) *Builder {
 // Features задаёт набор признаков.
 func (b *Builder) Features(features *Features) *Builder {
 	b.features = features
+	if features != nil {
+		if features.IsLexical() {
+			b.options.SetLexical(true)
+		}
+		if features.IsLexicalShade() {
+			b.options.SetLexicalShade(true)
+		}
+	}
+	return b
+}
+
+// Imports задаёт список импортируемых пакетов.
+func (b *Builder) Imports(imports ...string) *Builder {
+	b.options.SetImports(imports)
+	return b
+}
+
+// Namespaces задаёт карту пространств имён.
+func (b *Builder) Namespaces(namespaces map[string]any) *Builder {
+	b.options.SetNamespaces(namespaces)
+	return b
+}
+
+// Safe управляет безопасной навигацией (safe navigation).
+func (b *Builder) Safe(flag bool) *Builder {
+	b.options.SetSafe(flag)
+	return b
+}
+
+// Silent управляет silent режимом (ошибки не выбрасываются).
+func (b *Builder) Silent(flag bool) *Builder {
+	b.options.SetSilent(flag)
+	return b
+}
+
+// Strict управляет strict режимом.
+func (b *Builder) Strict(flag bool) *Builder {
+	b.options.SetStrict(flag)
+	return b
+}
+
+// Lexical управляет лексической областью видимости.
+func (b *Builder) Lexical(flag bool) *Builder {
+	b.options.SetLexical(flag)
+	return b
+}
+
+// LexicalShade управляет лексическим затенением.
+func (b *Builder) LexicalShade(flag bool) *Builder {
+	b.options.SetLexicalShade(flag)
 	return b
 }
 

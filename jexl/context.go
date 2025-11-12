@@ -66,3 +66,32 @@ type ThreadLocalContext interface {
 type ContextAware interface {
 	context.Context
 }
+
+// EmptyContext - пустой контекст, который не содержит переменных.
+// Аналог JexlEngine.EmptyContext из Java версии.
+type EmptyContext struct{}
+
+// Get всегда возвращает nil.
+func (e EmptyContext) Get(name string) any {
+	return nil
+}
+
+// Has всегда возвращает false.
+func (e EmptyContext) Has(name string) bool {
+	return false
+}
+
+// Set выбрасывает ошибку, так как пустой контекст не поддерживает установку значений.
+func (e EmptyContext) Set(name string, value any) {
+	// Пустой контекст не поддерживает установку значений
+	// В Java версии это выбрасывает UnsupportedOperationException
+}
+
+// EmptyNamespaceResolver - пустой резолвер пространств имён, который всегда возвращает nil.
+// Аналог JexlEngine.EmptyNamespaceResolver из Java версии.
+type EmptyNamespaceResolver struct{}
+
+// ResolveNamespace всегда возвращает nil.
+func (e EmptyNamespaceResolver) ResolveNamespace(name string) any {
+	return nil
+}

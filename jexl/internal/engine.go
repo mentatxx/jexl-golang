@@ -27,6 +27,8 @@ type engine struct {
 	silent             bool
 	cancellable        bool
 	debug              bool
+	charset            string
+	classLoader        any
 	parserFactory      jexl.ParserFactory
 	threadContext      jexl.ThreadLocalContext
 	parser             Parser
@@ -114,6 +116,13 @@ func NewEngine(builder *jexl.Builder) (jexl.Engine, error) {
 	eng.collectMode = builder.CollectModeValue()
 	eng.stackOverflow = builder.StackOverflowValue()
 	eng.cacheThreshold = builder.CacheThresholdValue()
+
+	// Настройка charset
+	charset := builder.CharsetValue()
+	if charset == "" {
+		charset = "UTF-8" // default
+	}
+	eng.charset = charset
 
 	return eng, nil
 }
@@ -259,14 +268,62 @@ func (e *engine) Arithmetic() jexl.Arithmetic {
 }
 
 func (e *engine) createInfo() *jexl.Info {
-	// TODO: реализовать создание Info из stack trace
 	return jexl.NewInfo()
+}
+
+// CreateInfo создаёт Info структуру из текущего стека вызовов.
+func (e *engine) CreateInfo() *jexl.Info {
+	return jexl.NewInfo()
+}
+
+// CreateInfoAt создаёт Info структуру с заданными параметрами.
+func (e *engine) CreateInfoAt(name string, line, column int) *jexl.Info {
+	return jexl.NewInfoAt(name, line, column)
+}
+
+// GetCharset возвращает кодировку, используемую для парсинга.
+func (e *engine) GetCharset() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.charset == "" {
+		return "UTF-8"
+	}
+	return e.charset
+}
+
+// IsDebug сообщает, включён ли режим отладки.
+func (e *engine) IsDebug() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.debug
+}
+
+// IsSilent сообщает, включён ли silent режим (ошибки не выбрасываются).
+func (e *engine) IsSilent() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.silent
+}
+
+// IsCancellable сообщает, будет ли движок выбрасывать исключение при прерывании.
+func (e *engine) IsCancellable() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.cancellable
+}
+
+// SetClassLoader устанавливает class loader для создания экземпляров по имени класса.
+// В Go это не применимо напрямую, но добавлено для совместимости API.
+func (e *engine) SetClassLoader(loader any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.classLoader = loader
 }
 
 // GetProperty получает свойство объекта по выражению.
 func (e *engine) GetProperty(ctx jexl.Context, bean any, expr string) (any, error) {
 	if ctx == nil {
-		ctx = emptyContext{}
+		ctx = jexl.EmptyContext{}
 	}
 	expression, err := e.CreateExpression(nil, expr)
 	if err != nil {
@@ -293,7 +350,7 @@ func (e *engine) SetProperty(ctx jexl.Context, bean any, expr string, value any)
 	// Парсим выражение как присваивание
 	// Для простоты поддерживаем только простые пути типа "prop" или "obj.prop"
 	if ctx == nil {
-		ctx = emptyContext{}
+		ctx = jexl.EmptyContext{}
 	}
 
 	uberspect := e.Uberspect()
@@ -401,19 +458,6 @@ func splitPropertyPath(path string) []string {
 	return strings.Split(path, ".")
 }
 
-// emptyContext пустой контекст.
-type emptyContext struct{}
-
-func (e emptyContext) Get(name string) any {
-	return nil
-}
-
-func (e emptyContext) Has(name string) bool {
-	return false
-}
-
-func (e emptyContext) Set(name string, value any) {
-	// Пустой контекст не поддерживает установку значений
-}
+// emptyContext больше не используется, используем jexl.EmptyContext
 
 const maxInt = int(^uint(0) >> 1)

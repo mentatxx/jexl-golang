@@ -55,6 +55,24 @@ func (a *templateExpressionCacheAdapter) Size() int {
 	return a.cache.Size()
 }
 
+func (a *templateExpressionCacheAdapter) Capacity() int {
+	return a.cache.Capacity()
+}
+
+func (a *templateExpressionCacheAdapter) Entries() []CacheEntry[string, TemplateExpression] {
+	entries := a.cache.Entries()
+	result := make([]CacheEntry[string, TemplateExpression], 0, len(entries))
+	for _, entry := range entries {
+		if expr, ok := entry.Value.(TemplateExpression); ok {
+			result = append(result, CacheEntry[string, TemplateExpression]{
+				Key:   entry.Key,
+				Value: expr,
+			})
+		}
+	}
+	return result
+}
+
 // TemplateOption задаёт опцию для TemplateEngine.
 type TemplateOption interface {
 	Apply(*TemplateConfig)

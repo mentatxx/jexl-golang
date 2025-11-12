@@ -50,4 +50,26 @@ type Engine interface {
 
 	// NewInstance создаёт новый экземпляр объекта.
 	NewInstance(className string, args ...any) (any, error)
+
+	// CreateInfo создаёт Info структуру из текущего стека вызовов.
+	CreateInfo() *Info
+
+	// CreateInfoAt создаёт Info структуру с заданными параметрами.
+	CreateInfoAt(name string, line, column int) *Info
+
+	// GetCharset возвращает кодировку, используемую для парсинга.
+	GetCharset() string
+
+	// IsDebug сообщает, включён ли режим отладки.
+	IsDebug() bool
+
+	// IsSilent сообщает, включён ли silent режим (ошибки не выбрасываются).
+	IsSilent() bool
+
+	// IsCancellable сообщает, будет ли движок выбрасывать исключение при прерывании.
+	IsCancellable() bool
+
+	// SetClassLoader устанавливает class loader для создания экземпляров по имени класса.
+	// В Go это не применимо напрямую, но добавлено для совместимости API.
+	SetClassLoader(loader any)
 }

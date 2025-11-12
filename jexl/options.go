@@ -54,6 +54,44 @@ var optionFlagNames = []string{
 
 var defaultOptionFlags uint32 = flagCancellable | flagStrict | flagAntish | flagSafe
 
+// ParseFlags парсит флаги в формате "+flag" или "-flag" и возвращает обновлённую маску.
+// Аналог JexlOptions.parseFlags из Java версии.
+func ParseFlags(initial uint32, flags ...string) uint32 {
+	mask := initial
+	for _, value := range flags {
+		if value == "" {
+			continue
+		}
+		desired := true
+		name := value
+		switch value[0] {
+		case '+':
+			name = value[1:]
+			desired = true
+		case '-':
+			name = value[1:]
+			desired = false
+		}
+		index := slices.Index(optionFlagNames, name)
+		if index == -1 {
+			continue // Игнорируем неизвестные флаги
+		}
+		bit := uint32(1) << uint(index)
+		if desired {
+			mask |= bit
+		} else {
+			mask &^= bit
+		}
+	}
+	return mask
+}
+
+// SetDefaultFlags устанавливает флаги по умолчанию (статические, общие для всех).
+// Аналог JexlOptions.setDefaultFlags из Java версии.
+func SetDefaultFlags(flags ...string) {
+	defaultOptionFlags = ParseFlags(defaultOptionFlags, flags...)
+}
+
 // NewOptions создаёт Options с настройками по умолчанию.
 func NewOptions() *Options {
 	return &Options{
