@@ -30,26 +30,26 @@ func NewClosure(engine jexl.Engine, lambda *jexl.LambdaNode, capturedContext jex
 	// Создаём ScriptNode из lambda для выполнения
 	scriptNode := jexl.NewScriptNode(nil, lambda.SourceText(), nil)
 	scriptNode.AddChild(lambda.Body())
-	
+
 	// Получаем имена параметров
 	params := make([]string, 0, len(lambda.Parameters()))
 	for _, param := range lambda.Parameters() {
 		params = append(params, param.Name())
 	}
 	scriptNode.SetParameters(params)
-	
+
 	// Создаём snapshot контекста для захвата переменных
 	// В Java версии closure захватывает ссылку на контекст, а не копию
 	// Это позволяет видеть изменения переменных после создания closure
 	// Но для правильной работы нужно использовать ссылку на контекст, а не копию
 	var snapshot jexl.Context = capturedContext
-	
+
 	baseScript := &script{
 		engine: engine,
 		source: lambda.SourceText(),
 		ast:    scriptNode,
 	}
-	
+
 	return &closure{
 		script:          baseScript,
 		capturedContext: snapshot,
@@ -68,7 +68,7 @@ func (c *closure) Execute(ctx jexl.Context, args ...any) (any, error) {
 			paramValues[name] = nil
 		}
 	}
-	
+
 	// Используем переданный контекст как базовый, если он есть
 	// Если переданный контекст nil, используем захваченный контекст
 	baseCtx := ctx
@@ -78,13 +78,22 @@ func (c *closure) Execute(ctx jexl.Context, args ...any) (any, error) {
 	if baseCtx == nil {
 		baseCtx = jexl.NewMapContext()
 	}
-	
+
 	// Если базовый контекст - это argumentContext, извлекаем его базовый контекст
 	// Это позволяет видеть переменные, установленные в скрипте (например, через var)
+	// Но также проверяем захваченный контекст, чтобы видеть переменные, установленные до создания closure
 	if argCtx, ok := baseCtx.(*argumentContext); ok {
+		// Если базовый контекст - это argumentContext, используем его базовый контекст
+		// Но также добавляем захваченный контекст, чтобы видеть переменные из скрипта
 		baseCtx = argCtx.base
+		// Если базовый контекст и захваченный контекст - это один и тот же объект, используем только базовый
+		if baseCtx == c.capturedContext {
+			// Не нужно добавлять capturedContext, так как это тот же объект
+		} else {
+			// Используем базовый контекст как есть - он уже содержит переменные из скрипта
+		}
 	}
-	
+
 	// Создаём объединённый контекст: параметры -> базовый контекст (где могут быть переменные после создания closure) -> захваченный контекст
 	// Важно: базовый контекст проверяется первым, чтобы видеть переменные, установленные после создания closure
 	// Если базовый контекст и захваченный контекст - это один и тот же объект, используем только базовый
@@ -93,7 +102,7 @@ func (c *closure) Execute(ctx jexl.Context, args ...any) (any, error) {
 		capturedCtx = nil // Избегаем двойной проверки одного и того же контекста
 	}
 	execCtx := newClosureContext(baseCtx, capturedCtx, paramValues)
-	
+
 	// Выполняем тело lambda напрямую через интерпретатор
 	interp := newInterpreter(c.engine, execCtx)
 	return interp.interpret(c.ast.Children()[0]) // Тело lambda - первый (и единственный) дочерний узел
@@ -162,4 +171,3 @@ func (c *closureContext) Set(name string, value any) {
 		c.baseCtx.Set(name, value)
 	}
 }
-

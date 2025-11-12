@@ -1401,7 +1401,10 @@ func (i *interpreter) interpretVar(node *jexl.VarNode) (any, error) {
 // interpretLambda выполняет lambda функцию и создаёт Closure.
 func (i *interpreter) interpretLambda(node *jexl.LambdaNode) (any, error) {
 	// Создаём closure с захваченным контекстом
-	closure := NewClosure(i.engine, node, i.context)
+	// Захватываем весь контекст, включая argumentContext, чтобы lambda видела переменные, установленные через var
+	// В Java версии closure захватывает Frame, который содержит все переменные из скрипта
+	capturedCtx := i.context
+	closure := NewClosure(i.engine, node, capturedCtx)
 	return closure, nil
 }
 

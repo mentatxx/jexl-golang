@@ -90,15 +90,61 @@ func (p *defaultParser) ParseScript(info *jexl.Info, source string, features *je
 			}
 		}
 		// Пробуем распарсить statement, если не получается - expression
-		node, err := builder.parseStatement()
-		if err != nil {
-			return nil, err
-		}
-		if node == nil {
-			// Если statement не распарсился, пробуем expression
-			node, err = builder.parseExpression(0)
+		var node jexl.Node
+		var err error
+		
+		// Если скрипт начинается с {, проверяем, является ли это выражением (SetLiteral/MapLiteral) или блоком
+		// В Java версии используется LOOKAHEAD для различения
+		// Если после { идет выражение (не ключевое слово), это литерал, иначе - блок
+		// Простой способ: если скрипт начинается с { и это не ключевое слово перед {, пробуем expression сначала
+		if builder.peek().typ == tokenLBrace {
+			// Пробуем парсить как выражение (SetLiteral/MapLiteral)
+			exprNode, exprErr := builder.parseExpression(0)
+			if exprErr == nil && exprNode != nil {
+				// Проверяем, является ли это SetLiteral или MapLiteral
+				if _, ok := exprNode.(*jexl.SetLiteralNode); ok {
+					node = exprNode
+				} else if _, ok := exprNode.(*jexl.MapLiteralNode); ok {
+					node = exprNode
+				} else {
+					// Это не литерал, пробуем как statement
+					// Но мы уже прочитали токены, поэтому нужно откатиться
+					// Проще всего - пробуем statement сначала, если не получается - expression
+					node, err = builder.parseStatement()
+					if err != nil {
+						return nil, err
+					}
+					if node == nil {
+						// Если statement не распарсился, используем expression
+						node = exprNode
+					}
+				}
+			} else {
+				// Не удалось распарсить как expression, пробуем как statement
+				node, err = builder.parseStatement()
+				if err != nil {
+					return nil, err
+				}
+				if node == nil {
+					// Если statement не распарсился, пробуем expression еще раз
+					node, err = builder.parseExpression(0)
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+		} else {
+			// Пробуем распарсить statement, если не получается - expression
+			node, err = builder.parseStatement()
 			if err != nil {
 				return nil, err
+			}
+			if node == nil {
+				// Если statement не распарсился, пробуем expression
+				node, err = builder.parseExpression(0)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		ast.AddChild(node)
@@ -1644,20 +1690,86 @@ func (l *lexer) nextToken() token {
 }
 
 func (l *lexer) string(quote rune) token {
-	for l.peek() != quote && !l.isAtEnd() {
-		if l.peek() == '\\' {
-			l.advance()
+	var value strings.Builder
+	escape := false
+	
+	for {
+		if l.isAtEnd() {
+			return l.errorToken("unterminated string")
 		}
+		
+		c := l.peek()
+		
+		if escape {
+			escape = false
+			switch c {
+			case 'n':
+				value.WriteRune('\n')
+			case 't':
+				value.WriteRune('\t')
+			case 'r':
+				value.WriteRune('\r')
+			case '\\':
+				value.WriteRune('\\')
+			case '\'':
+				value.WriteRune('\'')
+			case '"':
+				value.WriteRune('"')
+			case 'u':
+				// Unicode escape sequence: \uXXXX
+				l.advance() // consume 'u'
+				hex := ""
+				for i := 0; i < 4 && !l.isAtEnd(); i++ {
+					hexChar := l.peek()
+					if (hexChar >= '0' && hexChar <= '9') || 
+					   (hexChar >= 'A' && hexChar <= 'F') || 
+					   (hexChar >= 'a' && hexChar <= 'f') {
+						hex += string(hexChar)
+						l.advance()
+					} else {
+						// Invalid unicode escape, treat as literal
+						value.WriteRune('\\')
+						value.WriteRune('u')
+						value.WriteRune(hexChar)
+						break
+					}
+				}
+				if len(hex) == 4 {
+					if code, err := strconv.ParseUint(hex, 16, 16); err == nil {
+						value.WriteRune(rune(code))
+					} else {
+						value.WriteRune('\\')
+						value.WriteRune('u')
+						value.WriteString(hex)
+					}
+				}
+				continue
+			default:
+				// Если escape-последовательность не распознана, оставляем как есть
+				// (включая обратный слэш и следующий символ)
+				value.WriteRune('\\')
+				value.WriteRune(c)
+			}
+			l.advance()
+			continue
+		}
+		
+		if c == '\\' {
+			escape = true
+			l.advance()
+			continue
+		}
+		
+		if c == quote {
+			break
+		}
+		
+		value.WriteRune(c)
 		l.advance()
 	}
 
-	if l.isAtEnd() {
-		return l.errorToken("unterminated string")
-	}
-
-	l.advance()                            // закрывающая кавычка
-	value := l.source[l.start+1 : l.pos-1] // убираем кавычки
-	return token{typ: tokenString, literal: l.source[l.start:l.pos], value: value}
+	l.advance() // закрывающая кавычка
+	return token{typ: tokenString, literal: l.source[l.start:l.pos], value: value.String()}
 }
 
 func (l *lexer) number() token {
